@@ -25,6 +25,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 import asyncio
 import logging
+import re
 import shutil
 import threading
 import uuid
@@ -39,7 +40,24 @@ import webhooks
 from analyzer import analyze_finding
 from context import assemble_context
 from models import ScanRequest
-from scanner import clone_repo, run_semgrep
+from scanner import CloneError, clone_repo, run_semgrep
+
+# Accept https://github.com/<owner>/<repo>, optional .git suffix, optional
+# trailing slash. Owner/repo allow alphanumerics, dot, dash, underscore — the
+# character set GitHub itself uses. Anything else is a typo or non-GitHub host.
+_GITHUB_URL_RE = re.compile(
+    r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?/?$"
+)
+
+
+def _validate_repo_url(url: str) -> str:
+    cleaned = (url or "").strip()
+    if not _GITHUB_URL_RE.match(cleaned):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid URL. Expected a public GitHub repository, e.g. https://github.com/owner/repo",
+        )
+    return cleaned
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 log = logging.getLogger("pipeline")
@@ -275,14 +293,18 @@ def health() -> dict:
 
 @app.post("/scan")
 def start_scan(req: ScanRequest) -> dict:
+    # Reject obviously bad input up-front so the user gets feedback before the
+    # pipeline starts and burns a few seconds on a doomed git clone.
+    url = _validate_repo_url(req.url)
+
     # Resubmitting the same repo URL resumes the latest non-errored session
     # instead of kicking off a duplicate pipeline. New scans are gated behind
     # webhook pushes (which always fire) or a different repo URL.
-    existing = _find_existing_scan(req.url)
+    existing = _find_existing_scan(url)
     if existing is not None:
         return {"scan_id": existing, "existing": True}
 
-    scan_id = _start_pipeline(req.url, req.pat)
+    scan_id = _start_pipeline(url, req.pat)
 
     # Fire-and-forget webhook registration so the response doesn't block on
     # GitHub's API. Skipped if PAT or env config is missing — registration is
@@ -292,7 +314,7 @@ def start_scan(req: ScanRequest) -> dict:
     if req.pat and public_url and secret:
         threading.Thread(
             target=webhooks.register_webhook,
-            args=(req.url, req.pat, public_url, secret),
+            args=(url, req.pat, public_url, secret),
             daemon=True,
         ).start()
 
