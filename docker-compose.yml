@@ -9,6 +9,8 @@ services:
       - K2_API_KEY=${K2_API_KEY}
       - K2_BASE_URL=${K2_BASE_URL:-https://api.k2think.ai/v1}
       - K2_MODEL=${K2_MODEL:-MBZUAI-IFM/K2-Think-v2}
+      - BACKBOARD_API_KEY=${BACKBOARD_API_KEY:-}
+      - BACKBOARD_MODEL=${BACKBOARD_MODEL:-gpt-4o-mini}
     volumes:
       - /tmp/sentinelai:/tmp/sentinelai  # cloned repos, cleaned up after each scan
     restart: unless-stopped
