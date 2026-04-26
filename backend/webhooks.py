@@ -25,12 +25,16 @@ import hmac
 import json
 import logging
 import os
+import re
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 
 log = logging.getLogger("webhooks")
 
 router = APIRouter()
+
+_GITHUB_API = "https://api.github.com"
 
 
 def _verify_signature(body: bytes, signature_header: str, secret: str) -> bool:
@@ -90,3 +94,78 @@ async def github_webhook(request: Request) -> dict:
     scan_id = _start_pipeline(clone_url, None)
     log.info("webhook push → scan %s for %s (delivery=%s)", scan_id, clone_url, delivery)
     return {"ok": True, "scan_id": scan_id}
+
+
+# ── Outbound: register a webhook on a GitHub repo ────────────────────────────
+
+
+def _parse_repo(url: str) -> tuple[str, str] | None:
+    """github.com/owner/repo → (owner, repo). Strips .git, /tree/, etc."""
+    m = re.match(r"https?://github\.com/([^/]+)/([^/.]+)", url)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def register_webhook(repo_url: str, pat: str, public_url: str, secret: str) -> dict | None:
+    """Register a push-event webhook on the given GitHub repo.
+
+    Idempotent: lists existing hooks first and returns the existing entry if
+    one already targets our URL. Otherwise creates a new hook.
+
+    Returns the hook dict on success / already-registered, None on failure
+    (bad PAT, missing admin:repo_hook scope, network error, unparseable URL).
+    Failure is non-fatal — the scan still runs, just without auto-rescan on
+    future pushes.
+    """
+    parsed = _parse_repo(repo_url)
+    if not parsed:
+        log.warning("register_webhook: couldn't parse owner/repo from %s", repo_url)
+        return None
+    owner, repo = parsed
+    hook_url = public_url.rstrip("/") + "/webhook/github"
+
+    headers = {
+        "Authorization": f"token {pat}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    try:
+        with httpx.Client(timeout=15) as c:
+            r = c.get(f"{_GITHUB_API}/repos/{owner}/{repo}/hooks", headers=headers)
+            r.raise_for_status()
+            for hook in r.json():
+                if hook.get("config", {}).get("url") == hook_url:
+                    log.info("webhook already registered on %s/%s (id=%s)",
+                             owner, repo, hook.get("id"))
+                    return hook
+
+            r = c.post(
+                f"{_GITHUB_API}/repos/{owner}/{repo}/hooks",
+                headers=headers,
+                json={
+                    "name": "web",
+                    "active": True,
+                    "events": ["push"],
+                    "config": {
+                        "url": hook_url,
+                        "content_type": "json",
+                        "secret": secret,
+                        "insecure_ssl": "0",
+                    },
+                },
+            )
+            r.raise_for_status()
+            hook = r.json()
+            log.info("webhook registered on %s/%s (id=%s)",
+                     owner, repo, hook.get("id"))
+            return hook
+    except httpx.HTTPStatusError as e:
+        log.warning("webhook registration failed (%d) on %s/%s: %s",
+                    e.response.status_code, owner, repo, e.response.text[:200])
+        return None
+    except httpx.HTTPError as e:
+        log.warning("webhook registration network error on %s/%s: %s",
+                    owner, repo, e)
+        return None
