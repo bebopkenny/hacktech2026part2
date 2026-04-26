@@ -15,7 +15,10 @@ import shutil
 import threading
 import uuid
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 from fastapi.middleware.cors import CORSMiddleware
 
 from analyzer import analyze_finding
@@ -31,6 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# scan_id → {status, progress, raw_count, confirmed_count, findings, error}
 scans: dict[str, dict] = {}
 _lock = threading.Lock()
 
@@ -149,5 +153,3 @@ def scan_findings(scan_id: str) -> dict:
         "confirmed_count": scan["confirmed_count"],
         "findings": scan["findings"],
     }
-
-
