@@ -236,6 +236,19 @@ def health() -> dict:
 @app.post("/scan")
 def start_scan(req: ScanRequest) -> dict:
     scan_id = _start_pipeline(req.url, req.pat)
+
+    # Fire-and-forget webhook registration so the response doesn't block on
+    # GitHub's API. Skipped if PAT or env config is missing — registration is
+    # a bonus, not a prerequisite for the scan.
+    public_url = os.getenv("PUBLIC_WEBHOOK_URL")
+    secret = os.getenv("GITHUB_WEBHOOK_SECRET")
+    if req.pat and public_url and secret:
+        threading.Thread(
+            target=webhooks.register_webhook,
+            args=(req.url, req.pat, public_url, secret),
+            daemon=True,
+        ).start()
+
     return {"scan_id": scan_id}
 
 
