@@ -12,6 +12,7 @@ Pipeline runs in a background threading.Thread so the POST returns immediately.
 """
 # ruff: noqa: E402 — load_dotenv must run before analyzer/backboard_client are
 # imported, since those modules read env vars at import time.
+import asyncio
 import os
 
 from dotenv import load_dotenv
@@ -24,7 +25,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 import backboard_client
@@ -43,6 +44,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── WebSocket connection manager ─────────────────────────────────────────────
+
+class ConnectionManager:
+    def __init__(self) -> None:
+        self.active: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket) -> None:
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, message: dict) -> None:
+        dead = []
+        for ws in list(self.active):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            if ws in self.active:
+                self.active.remove(ws)
+
+
+manager = ConnectionManager()
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+@app.on_event("startup")
+async def _capture_loop() -> None:
+    global _loop
+    _loop = asyncio.get_event_loop()
+
+
+def _broadcast_sync(msg: dict) -> None:
+    """Schedule a broadcast from a background thread onto the main event loop."""
+    if _loop is not None and manager.active:
+        asyncio.run_coroutine_threadsafe(manager.broadcast(msg), _loop)
+
+
+# ── In-memory scan store ──────────────────────────────────────────────────────
 
 # scan_id → {status, progress, raw_count, confirmed_count, findings, error}
 scans: dict[str, dict] = {}
@@ -87,12 +132,14 @@ def _analyze_one(repo_path: str, finding: dict, prior_context: str) -> tuple[dic
 def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
     repo_path: str | None = None
     try:
+        _broadcast_sync({"type": "scan_started"})
         repo_path = clone_repo(url, pat)
         _update(scan_id, status="scanning")
 
         raw = run_semgrep(repo_path)
         total = len(raw)
         _update(scan_id, status="analyzing", raw_count=total, progress=f"0/{total} findings")
+        _broadcast_sync({"type": "semgrep_done", "count": total})
 
         # Pull prior-scan context from Backboard (no-op if BACKBOARD_API_KEY unset
         # or this is the first scan of this repo).
@@ -111,7 +158,7 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
                 done += 1
 
                 if verdict and verdict.get("exploitable"):
-                    confirmed.append({
+                    result = {
                         "rule_id": finding.get("check_id", "unknown"),
                         "file": finding.get("path", "unknown"),
                         "line": finding.get("start", {}).get("line", 0),
@@ -123,6 +170,13 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
                         "exploit_steps": verdict.get("exploit_steps", []),
                         "severity": verdict.get("severity", "low"),
                         "fix": verdict.get("fix", ""),
+                    }
+                    confirmed.append(result)
+                    _broadcast_sync({
+                        "type": "finding_ready",
+                        "finding": result,
+                        "index": done - 1,
+                        "total": total,
                     })
 
                 _update(
@@ -139,11 +193,13 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
             findings=confirmed,
             progress=f"{total}/{total} findings",
         )
+        _broadcast_sync({"type": "scan_complete", "raw_count": total})
 
         # Persist this scan's findings to Backboard so the next scan has context.
         backboard_client.append_findings(url, confirmed)
     except Exception as e:
         _update(scan_id, status="error", error=str(e))
+        _broadcast_sync({"type": "scan_error", "error": str(e)})
     finally:
         if repo_path and os.path.isdir(repo_path):
             shutil.rmtree(repo_path, ignore_errors=True)
@@ -190,3 +246,13 @@ def scan_findings(scan_id: str) -> dict:
         "confirmed_count": scan["confirmed_count"],
         "findings": scan["findings"],
     }
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # keep connection alive; server only pushes
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
