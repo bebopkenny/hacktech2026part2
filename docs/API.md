@@ -6,6 +6,13 @@ CORS is wide open, so the frontend can call directly from any origin.
 All requests/responses are JSON. There is **no authentication** on the API
 (demo scope).
 
+**Per-repo memory:** when the backend has `BACKBOARD_API_KEY` configured,
+findings persist across scans of the same repo. The first scan of a repo is
+just analysis; subsequent scans of the same `url` get prior-finding context
+injected into the reasoning prompt, so the model can flag recurring or
+recently-fixed issues. No frontend changes needed — the API surface is
+identical, the `findings` array just becomes higher-quality over time.
+
 ---
 
 ## Lifecycle

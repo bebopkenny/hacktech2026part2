@@ -10,17 +10,22 @@ Routes:
 In-memory store (scans dict) is fine for demo — no database needed.
 Pipeline runs in a background threading.Thread so the POST returns immediately.
 """
+# ruff: noqa: E402 — load_dotenv must run before analyzer/backboard_client are
+# imported, since those modules read env vars at import time.
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 import shutil
 import threading
 import uuid
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 from fastapi.middleware.cors import CORSMiddleware
 
+import backboard_client
 from analyzer import analyze_finding
 from context import assemble_context
 from models import ScanRequest
@@ -68,11 +73,15 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         total = len(raw)
         _update(scan_id, status="analyzing", raw_count=total, progress=f"0/{total} findings")
 
+        # Pull prior-scan context from Backboard (no-op if BACKBOARD_API_KEY unset
+        # or this is the first scan of this repo).
+        prior_context = backboard_client.get_history_summary(url)
+
         confirmed: list[dict] = []
         for i, finding in enumerate(raw, start=1):
             try:
                 bundle = assemble_context(repo_path, finding)
-                verdict = analyze_finding(bundle)
+                verdict = analyze_finding(bundle, prior_context=prior_context)
             except Exception:
                 _update(scan_id, progress=f"{i}/{total} findings")
                 continue
@@ -105,6 +114,9 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
             findings=confirmed,
             progress=f"{total}/{total} findings",
         )
+
+        # Persist this scan's findings to Backboard so the next scan has context.
+        backboard_client.append_findings(url, confirmed)
     except Exception as e:
         _update(scan_id, status="error", error=str(e))
     finally:

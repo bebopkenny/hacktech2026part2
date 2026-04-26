@@ -50,7 +50,7 @@ if [ ! -f "${APP_DIR}/.env" ]; then
   echo ""
   echo "!! Missing ${APP_DIR}/.env — copy it from your laptop:"
   echo "   scp .env root@<vultr-ip>:${APP_DIR}/.env"
-  echo "   It must contain ANTHROPIC_API_KEY and WEBHOOK_SECRET."
+  echo "   It must contain K2_API_KEY, SEMGREP_APP_TOKEN, and (optionally) BACKBOARD_API_KEY."
   exit 1
 fi
 

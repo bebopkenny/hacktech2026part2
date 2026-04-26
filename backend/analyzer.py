@@ -51,7 +51,7 @@ file: {file}
 line: {line}
 matched code: {matched_code}
 semgrep message: {message}
-
+{prior_block}
 ## Code Files
 {files_block}
 
@@ -146,7 +146,7 @@ def _call_k2(prompt: str) -> str:
     return (response.choices[0].message.content or "").strip()
 
 
-def analyze_finding(context_bundle: dict) -> dict:
+def analyze_finding(context_bundle: dict, prior_context: str = "") -> dict:
     finding = context_bundle["finding"]
     files = context_bundle["files"]
 
@@ -155,6 +155,14 @@ def analyze_finding(context_bundle: dict) -> dict:
         for path, content in files.items()
     )
 
+    prior_block = ""
+    if prior_context:
+        prior_block = (
+            "\n## Prior scan context for this repo\n"
+            "Memory of previous scans (use this to flag recurring findings):\n"
+            f"{prior_context}\n"
+        )
+
     prompt = _PROMPT.format(
         rule_id=finding.get("check_id", "unknown"),
         file=finding.get("path", "unknown"),
@@ -162,6 +170,7 @@ def analyze_finding(context_bundle: dict) -> dict:
         matched_code=finding.get("extra", {}).get("lines", ""),
         message=finding.get("extra", {}).get("message", ""),
         files_block=files_block,
+        prior_block=prior_block,
     )
 
     for attempt in (1, 2):
