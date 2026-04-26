@@ -21,21 +21,27 @@ import json
 import logging
 import os
 import re
+import threading
 
 from openai import APIError, OpenAI
 
 log = logging.getLogger("analyzer")
 
 _client: OpenAI | None = None
+_client_lock = threading.Lock()
 
 
 def _get_client() -> OpenAI:
+    """Lazy-init a single OpenAI client. Lock-protected so concurrent K2
+    workers don't each create their own client object."""
     global _client
     if _client is None:
-        _client = OpenAI(
-            api_key=os.environ["K2_API_KEY"],
-            base_url=os.getenv("K2_BASE_URL", "https://api.k2think.ai/v1"),
-        )
+        with _client_lock:
+            if _client is None:
+                _client = OpenAI(
+                    api_key=os.environ["K2_API_KEY"],
+                    base_url=os.getenv("K2_BASE_URL", "https://api.k2think.ai/v1"),
+                )
     return _client
 
 

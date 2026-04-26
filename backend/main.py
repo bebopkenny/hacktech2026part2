@@ -18,9 +18,11 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
+import logging
 import shutil
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +32,9 @@ from analyzer import analyze_finding
 from context import assemble_context
 from models import ScanRequest
 from scanner import clone_repo, run_semgrep
+
+log = logging.getLogger("pipeline")
+_K2_PARALLEL = int(os.getenv("K2_PARALLEL", "5"))
 
 app = FastAPI(title="SentinelAI")
 app.add_middleware(
@@ -63,6 +68,22 @@ def _update(scan_id: str, **fields) -> None:
         scans[scan_id].update(fields)
 
 
+def _analyze_one(repo_path: str, finding: dict, prior_context: str) -> tuple[dict | None, dict]:
+    """Run context-assembly + K2 analysis for a single Semgrep finding.
+
+    Returns (verdict_or_None, finding). Verdict is None if anything raises;
+    finding is returned alongside so the caller can correlate after as_completed
+    reorders results.
+    """
+    try:
+        bundle = assemble_context(repo_path, finding)
+        verdict = analyze_finding(bundle, prior_context=prior_context)
+        return verdict, finding
+    except Exception as e:
+        log.warning("analyze_one failed for %s: %s", finding.get("check_id"), e)
+        return None, finding
+
+
 def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
     repo_path: str | None = None
     try:
@@ -77,35 +98,39 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         # or this is the first scan of this repo).
         prior_context = backboard_client.get_history_summary(url)
 
+        # K2 calls run in parallel — biggest wall-clock win in the pipeline.
+        # Each finding is one independent K2 round-trip; up to K2_PARALLEL run
+        # concurrently. _update() is already lock-protected; confirmed.append()
+        # happens only on the main thread (in the as_completed loop).
         confirmed: list[dict] = []
-        for i, finding in enumerate(raw, start=1):
-            try:
-                bundle = assemble_context(repo_path, finding)
-                verdict = analyze_finding(bundle, prior_context=prior_context)
-            except Exception:
-                _update(scan_id, progress=f"{i}/{total} findings")
-                continue
+        done = 0
+        with ThreadPoolExecutor(max_workers=_K2_PARALLEL) as ex:
+            futures = [ex.submit(_analyze_one, repo_path, f, prior_context) for f in raw]
+            for fut in as_completed(futures):
+                verdict, finding = fut.result()
+                done += 1
 
-            if verdict.get("exploitable"):
-                confirmed.append({
-                    "rule_id": finding.get("check_id", "unknown"),
-                    "file": finding.get("path", "unknown"),
-                    "line": finding.get("start", {}).get("line", 0),
-                    "matched_code": finding.get("extra", {}).get("lines", ""),
-                    "exploitable": True,
-                    "confidence": verdict.get("confidence", "low"),
-                    "taint_path": verdict.get("taint_path"),
-                    "auth_gap": verdict.get("auth_gap"),
-                    "exploit_steps": verdict.get("exploit_steps", []),
-                    "severity": verdict.get("severity", "low"),
-                    "fix": verdict.get("fix", ""),
-                })
-            _update(
-                scan_id,
-                progress=f"{i}/{total} findings",
-                confirmed_count=len(confirmed),
-                findings=list(confirmed),
-            )
+                if verdict and verdict.get("exploitable"):
+                    confirmed.append({
+                        "rule_id": finding.get("check_id", "unknown"),
+                        "file": finding.get("path", "unknown"),
+                        "line": finding.get("start", {}).get("line", 0),
+                        "matched_code": finding.get("extra", {}).get("lines", ""),
+                        "exploitable": True,
+                        "confidence": verdict.get("confidence", "low"),
+                        "taint_path": verdict.get("taint_path"),
+                        "auth_gap": verdict.get("auth_gap"),
+                        "exploit_steps": verdict.get("exploit_steps", []),
+                        "severity": verdict.get("severity", "low"),
+                        "fix": verdict.get("fix", ""),
+                    })
+
+                _update(
+                    scan_id,
+                    progress=f"{done}/{total} findings",
+                    confirmed_count=len(confirmed),
+                    findings=list(confirmed),
+                )
 
         _update(
             scan_id,
