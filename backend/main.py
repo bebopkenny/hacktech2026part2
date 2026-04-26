@@ -40,7 +40,7 @@ import webhooks
 from analyzer import analyze_finding
 from context import assemble_context
 from models import ScanRequest
-from scanner import CloneError, clone_repo, run_semgrep
+from scanner import clone_repo, run_semgrep
 
 # Accept https://github.com/<owner>/<repo>, optional .git suffix, optional
 # trailing slash. Owner/repo allow alphanumerics, dot, dash, underscore — the
