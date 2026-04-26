@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 import backboard_client
+import snapshots
 import webhooks
 from analyzer import analyze_finding
 from context import assemble_context
@@ -159,6 +160,8 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         # Pull prior-scan context from Backboard (no-op if BACKBOARD_API_KEY unset
         # or this is the first scan of this repo).
         prior_context = backboard_client.get_history_summary(url)
+        # Structured prior severities (used for escalated_from detection).
+        prior_snapshot = snapshots.load(url)
 
         # K2 calls run in parallel — biggest wall-clock win in the pipeline.
         # Each finding is one independent K2 round-trip; up to K2_PARALLEL run
@@ -173,9 +176,17 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
                 done += 1
 
                 if verdict and verdict.get("exploitable"):
+                    # Strip the tmp clone prefix so paths are stable across scans
+                    # (the tempdir name is random) and look clean in the UI.
+                    finding_path = finding.get("path", "unknown")
+                    if finding_path != "unknown" and repo_path:
+                        try:
+                            finding_path = os.path.relpath(finding_path, repo_path)
+                        except ValueError:
+                            pass
                     result = {
                         "rule_id": finding.get("check_id", "unknown"),
-                        "file": finding.get("path", "unknown"),
+                        "file": finding_path,
                         "line": finding.get("start", {}).get("line", 0),
                         "matched_code": finding.get("extra", {}).get("lines", ""),
                         "exploitable": True,
@@ -186,6 +197,7 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
                         "severity": verdict.get("severity", "low"),
                         "fix": verdict.get("fix", ""),
                     }
+                    result["escalated_from"] = snapshots.escalation(prior_snapshot, result)
                     confirmed.append(result)
                     _broadcast_sync({
                         "type": "finding_ready",
@@ -211,7 +223,8 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         _broadcast_sync({"type": "scan_complete", "raw_count": total})
 
         log.info("[%s] complete: %d/%d confirmed exploitable", scan_id, len(confirmed), total)
-        # Persist this scan's findings to Backboard so the next scan has context.
+        # Persist this scan for next-scan diff (escalated_from) + Backboard memory.
+        snapshots.save(url, confirmed)
         backboard_client.append_findings(url, confirmed)
     except Exception as e:
         log.exception("[%s] pipeline failed", scan_id)
@@ -236,6 +249,19 @@ def health() -> dict:
 @app.post("/scan")
 def start_scan(req: ScanRequest) -> dict:
     scan_id = _start_pipeline(req.url, req.pat)
+
+    # Fire-and-forget webhook registration so the response doesn't block on
+    # GitHub's API. Skipped if PAT or env config is missing — registration is
+    # a bonus, not a prerequisite for the scan.
+    public_url = os.getenv("PUBLIC_WEBHOOK_URL")
+    secret = os.getenv("GITHUB_WEBHOOK_SECRET")
+    if req.pat and public_url and secret:
+        threading.Thread(
+            target=webhooks.register_webhook,
+            args=(req.url, req.pat, public_url, secret),
+            daemon=True,
+        ).start()
+
     return {"scan_id": scan_id}
 
 
