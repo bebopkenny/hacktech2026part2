@@ -21,4 +21,10 @@ down:
 logs:
 	docker-compose logs -f
 
-.PHONY: install install-backend install-frontend serve-backend serve-frontend up down logs
+smoke-k2:
+	python3 scripts/smoke.py k2
+
+smoke-api:
+	python3 scripts/smoke.py api
+
+.PHONY: install install-backend install-frontend serve-backend serve-frontend up down logs smoke-k2 smoke-api

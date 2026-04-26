@@ -3,14 +3,36 @@ version: "3.8"
 services:
   backend:
     build: ./backend
+    expose:
+      - "8000"
     ports:
-      - "8000:8000"
+      - "8000:8000"  # remove if you only want Caddy to expose the API
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
-      # - K2_API_KEY=${K2_API_KEY}  # uncomment if using K2-Think-v2
+      - K2_API_KEY=${K2_API_KEY}
+      - K2_BASE_URL=${K2_BASE_URL:-https://api.k2think.ai/v1}
+      - K2_MODEL=${K2_MODEL:-MBZUAI-IFM/K2-Think-v2}
     volumes:
-      - /tmp/sentinelai:/tmp/sentinelai  # cloned repos land here, cleaned up after each scan
+      - /tmp/sentinelai:/tmp/sentinelai  # cloned repos, cleaned up after each scan
+    restart: unless-stopped
 
-  # frontend served separately (Vite dev server or Vercel)
-  # add nginx service here if you want to serve the built frontend from Vultr
+  # Caddy auto-provisions a Let's Encrypt cert for $DOMAIN.
+  # Skip this service entirely (or omit DOMAIN) if you're fine with plain HTTP on :8000.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,9 @@
+# Caddy config — auto-HTTPS via Let's Encrypt for {$DOMAIN}.
+# Requires DOMAIN to be set in /opt/sentinelai/.env and DNS A-record pointing
+# at the Vultr box's public IP. Activate with:
+#   docker compose --profile tls up -d --build
+
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy backend:8000
+}
