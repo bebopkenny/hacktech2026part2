@@ -16,7 +16,7 @@ React (Vite) ──► FastAPI ──► Semgrep CLI ──► analyzer ┤
                                          └────────────────────────┘
 ```
 
-No WebSocket. No database (Backboard is the memory store). Synchronous pipeline with polling for status. Backboard is optional — if `BACKBOARD_API_KEY` is unset, the pipeline runs without cross-scan memory.
+No database (Backboard is the memory store). The pipeline runs synchronously in a background thread; the frontend gets live updates via a WebSocket at `/ws`. GitHub webhooks at `/webhook/github` auto-trigger rescans on push when a hook has been registered (which `POST /scan` does for any submitted repo if a PAT is provided). Backboard is optional — if `BACKBOARD_API_KEY` is unset, the pipeline runs without cross-scan memory.
 
 ---
 
@@ -30,8 +30,10 @@ sentinelai/
 │   ├── context.py           # collect relevant files per finding
 │   ├── analyzer.py          # K2-Think-v2 prompt + parse response
 │   ├── backboard_client.py  # per-repo persistent memory layer
+│   ├── webhooks.py          # /webhook/github receiver + GitHub-API registrar
+│   ├── snapshots.py         # per-repo finding snapshots → escalated_from
 │   ├── models.py            # pydantic schemas
-│   ├── requirements.txt     # fastapi, uvicorn, httpx, openai, semgrep, dotenv
+│   ├── requirements.txt     # fastapi, uvicorn[standard], httpx, openai, semgrep, dotenv, websockets
 │   └── Dockerfile
 ├── frontend/
 │   ├── src/
@@ -55,7 +57,7 @@ sentinelai/
 
 ### main.py — Routes
 
-Three endpoints + one in-memory store:
+Five HTTP routes + one WebSocket + one in-memory store:
 
 ```python
 scans = {}  # scan_id -> {status, progress, raw_count, confirmed_count, findings}
@@ -76,7 +78,29 @@ scans = {}  # scan_id -> {status, progress, raw_count, confirmed_count, findings
 - Returns: `{raw_count, confirmed_count, findings: [...]}`
 - Only meaningful once status = "complete"
 
+**POST /webhook/github**
+- Receives GitHub push events (and the initial `ping`)
+- Verifies HMAC-SHA256 against `GITHUB_WEBHOOK_SECRET` (constant-time)
+- Triggers `_start_pipeline()` for the repo's `clone_url` on push
+- Returns 200/`pong` for ping, 401 on bad signature, 503 if secret unset
+
+**WS /ws**
+- Live event stream for the dashboard. No client→server messages.
+- Server-pushed events: `scan_started`, `semgrep_done` (with `count`),
+  `finding_ready` (with `index`, `total`, `finding`), `scan_complete`
+  (with `raw_count`), `scan_error`.
+- Single global broadcast — every connected client sees every event.
+
 Add CORS middleware for frontend dev (`allow_origins=["*"]`).
+
+### Webhook auto-registration
+
+When `POST /scan` is called with a PAT (and `PUBLIC_WEBHOOK_URL` +
+`GITHUB_WEBHOOK_SECRET` are set), the backend fires a background thread that
+calls GitHub's `POST /repos/{owner}/{repo}/hooks` to attach a push-event
+webhook pointing at this server's `/webhook/github`. Idempotent — a repeat
+scan of the same repo finds the existing hook and returns it. PAT must have
+`admin:repo_hook` scope.
 
 ### scanner.py — Clone + Semgrep
 
