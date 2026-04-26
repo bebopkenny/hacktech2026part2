@@ -1,19 +1,19 @@
-# SentinelAI
+# Piratech | hackpira.tech
 
 **Connect your repo. See why it's exploitable.**
 
 > Hacktech 2026 · California Institute of Technology · April 24–26
 
-Static analysis tools have a precision problem. Semgrep fires hundreds of findings and developers ignore all of them. The hard part isn't detection — it's knowing which findings are actually exploitable in your specific codebase. That requires reading your code the way a senior security engineer would. SentinelAI does that in seconds.
+Static analysis tools have a precision problem. Semgrep fires hundreds of findings and developers ignore all of them. The hard part isn't detection — it's knowing which findings are actually exploitable in your specific codebase. That requires reading your code the way a senior security engineer would. Piratech does that in seconds.
 
 ---
 
 ## What it does
 
-SentinelAI is a two-layer security analysis pipeline:
+Piratech is a two-layer security analysis pipeline:
 
 **Layer 1 — Semgrep (deterministic detection)**
-Runs `p/owasp-top-ten`, `p/secrets`, `p/sql-injection`, `p/nodejs`, and `p/python` against the cloned repo. Produces structured JSON candidates. Fast, zero hallucinations. If Semgrep doesn't flag it, SentinelAI doesn't flag it.
+Runs `p/owasp-top-ten`, `p/secrets`, `p/sql-injection`, `p/nodejs`, and `p/python` against the cloned repo. Produces structured JSON candidates. Fast, zero hallucinations. If Semgrep doesn't flag it, Piratech doesn't flag it.
 
 **Layer 2 — K2-Think-v2 (reasoning)**
 For each Semgrep finding, the reasoning model receives the flagged file plus all relevant context — the route file, auth middleware, database layer — and performs four tasks:
@@ -103,8 +103,8 @@ Every output contains: exploitable verdict, taint path with file/line evidence, 
 ### Backend
 
 ```bash
-git clone https://github.com/your-org/sentinelai
-cd sentinelai
+git clone https://github.com/your-org/Piratech
+cd Piratech
 cp .env.example .env
 # Fill in K2_API_KEY and SEMGREP_APP_TOKEN at minimum
 docker-compose up --build
