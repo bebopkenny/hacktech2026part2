@@ -18,18 +18,52 @@ import subprocess
 import tempfile
 
 
+class CloneError(RuntimeError):
+    """Raised when cloning fails, with a user-readable message."""
+
+
+def _friendly_clone_error(stderr: str) -> str:
+    """Map git stderr to a short message we can show in the UI."""
+    s = (stderr or "").lower()
+    if "repository not found" in s or "not found" in s and "github.com" in s:
+        return "Repository not found. Check the URL, and if it's private, supply a PAT with repo access."
+    if "could not resolve host" in s or "could not read from remote" in s:
+        return "Couldn't reach GitHub from the server. Network or DNS issue."
+    if "authentication failed" in s or "invalid username or password" in s or "http 401" in s:
+        return "Authentication failed. The PAT is missing, expired, or lacks repo scope."
+    if "permission denied" in s or "http 403" in s:
+        return "Permission denied. The PAT doesn't have access to this repository."
+    if "fatal:" in s:
+        # Pull the first 'fatal: ...' line out for a concise message.
+        for line in (stderr or "").splitlines():
+            line = line.strip()
+            if line.lower().startswith("fatal:"):
+                return line[6:].strip().rstrip(".") or "git clone failed."
+    return "git clone failed. The repository may be invalid or unreachable."
+
+
 def clone_repo(url: str, pat: str | None = None) -> str:
     if pat and "github.com" in url:
         url = url.replace("https://", f"https://{pat}@")
 
     os.makedirs("/tmp/sentinelai", exist_ok=True)
     dest = tempfile.mkdtemp(prefix="sentinelai_", dir="/tmp/sentinelai")
-    subprocess.run(
-        ["git", "clone", "--depth", "1", url, dest],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", url, dest],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        # Strip the dest tempdir if the clone left it behind.
+        try:
+            if os.path.isdir(dest):
+                import shutil as _sh
+                _sh.rmtree(dest, ignore_errors=True)
+        except Exception:
+            pass
+        raise CloneError(_friendly_clone_error(e.stderr)) from e
     return dest
 
 

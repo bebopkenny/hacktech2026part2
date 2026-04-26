@@ -124,6 +124,10 @@ export default function App() {
   const [progress, setProgress] = useState({ step: "", pct: 0, raw_count: 0 });
   const [repoUrl, setRepoUrl] = useState("");
   const [useMock, setUseMock] = useState(false);
+  // Set when a scan fails (clone failure, invalid URL, pipeline crash). The
+  // results view checks this and shows a failure card instead of "0 findings",
+  // which used to be indistinguishable from a clean scan.
+  const [scanError, setScanError] = useState(null);
   const mockTimer = useRef(null);
   // Tracks the scan_id we're currently watching. Late-arriving events from
   // earlier scans (e.g. K2 retries finishing after a new scan started) get
@@ -136,6 +140,7 @@ export default function App() {
       // New scan takes over the dashboard — webhook-triggered or manual.
       currentScanIdRef.current = data.scan_id || null;
       if (data.scan_id) writeScanIdToUrl(data.scan_id);
+      setScanError(null);
       setPhase("scanning");
       setFindings([]);
       setProgress({ step: "Cloning repository…", pct: 10, raw_count: 0 });
@@ -154,6 +159,9 @@ export default function App() {
     } else if (data.type === "scan_complete") {
       setPhase("done");
       setProgress({ step: "Scan complete", pct: 100, raw_count: data.raw_count });
+    } else if (data.type === "scan_error") {
+      setScanError(data.error || "Scan failed.");
+      setPhase("done");
     }
   }, []);
 
@@ -237,7 +245,7 @@ export default function App() {
         return;
       }
       if (s.status === "error") {
-        setProgress({ step: `Error: ${s.error || "scan failed"}`, pct: 100, raw_count: 0 });
+        setScanError(s.error || "Scan failed.");
         setPhase("done");
         return;
       }
@@ -268,7 +276,7 @@ export default function App() {
       setProgress({ step: "Scan complete", pct: 100, raw_count: f.raw_count });
       setPhase("done");
     } else if (f.status === "error") {
-      setProgress({ step: `Error: ${f.error || "scan failed"}`, pct: 100, raw_count: f.raw_count });
+      setScanError(f.error || "Scan failed.");
       setPhase("done");
     } else {
       setPhase("scanning");
@@ -280,6 +288,7 @@ export default function App() {
   const handleScan = useCallback(async ({ url, pat }) => {
     setRepoUrl(url);
     setUseMock(false);
+    setScanError(null);
     setPhase("scanning");
     setFindings([]);
     setProgress({ step: "Submitting…", pct: 5, raw_count: 0 });
@@ -292,7 +301,20 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, pat: pat || undefined }),
       });
-      if (!res.ok) throw new Error(`scan failed: ${res.status}`);
+      if (!res.ok) {
+        // 4xx = the server understood and rejected (validation, etc) — show
+        // the message inline. 5xx is a real server fault, also worth showing.
+        // Either way it's *not* the same as "the box is unreachable", so we
+        // don't fall back to mock data.
+        let detail = `Server returned ${res.status}.`;
+        try {
+          const body = await res.json();
+          if (body && body.detail) detail = body.detail;
+        } catch { /* non-json body */ }
+        setScanError(detail);
+        setPhase("done");
+        return;
+      }
       const data = await res.json();
       scanId = data.scan_id;
       existing = !!data.existing;
@@ -301,7 +323,8 @@ export default function App() {
       currentScanIdRef.current = scanId;
       writeScanIdToUrl(scanId);
     } catch {
-      // backend unreachable — fall back to mock
+      // True network failure (fetch threw) — backend unreachable. Fall back
+      // to the canned demo so the UI still has something to show.
       setUseMock(true);
       runMockScan(url);
       return;
@@ -330,6 +353,7 @@ export default function App() {
     setProgress({ step: "", pct: 0, raw_count: 0 });
     setRepoUrl("");
     setUseMock(false);
+    setScanError(null);
   }, []);
 
   useEffect(() => {
@@ -385,8 +409,15 @@ export default function App() {
           />
         )}
 
+        {/* Failure state — shown instead of the results section when the
+            pipeline errored. Without this the user used to see "0 vulnerabilities"
+            and assume success. */}
+        {phase === "done" && scanError && (
+          <ErrorCard repoUrl={repoUrl} message={scanError} onReset={handleReset} />
+        )}
+
         {/* Results */}
-        {(phase === "done" || (phase === "scanning" && findings.length > 0)) && (
+        {!scanError && (phase === "done" || (phase === "scanning" && findings.length > 0)) && (
           <div className="space-y-6">
             {/* Stats bar */}
             {phase === "done" && (
@@ -459,6 +490,47 @@ export default function App() {
 
         {phase === "idle" && <EmptyState />}
       </main>
+    </div>
+  );
+}
+
+function ErrorCard({ repoUrl, message, onReset }) {
+  const shortUrl = (repoUrl || "").replace("https://github.com/", "");
+  return (
+    <div
+      className="border rounded-lg p-6 animate-fade-in-up"
+      style={{
+        borderColor: "rgba(255,51,102,0.4)",
+        background: "rgba(255,51,102,0.06)",
+        boxShadow: "0 0 24px rgba(255,51,102,0.12)",
+      }}
+    >
+      <div className="flex items-start gap-4">
+        <div
+          className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+          style={{ background: "rgba(255,51,102,0.15)", border: "1px solid rgba(255,51,102,0.4)" }}
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="var(--critical)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="mono text-xs tracking-widest uppercase mb-2" style={{ color: "var(--critical)" }}>Scan failed</p>
+          {shortUrl && (
+            <p className="mono text-sm text-white truncate mb-3">{shortUrl}</p>
+          )}
+          <p className="text-[var(--muted)] text-sm leading-relaxed">{message}</p>
+          <button
+            onClick={onReset}
+            className="mt-5 mono text-xs tracking-widest uppercase border rounded px-4 py-2 hover:bg-white/5 transition-colors"
+            style={{ borderColor: "var(--critical)", color: "var(--critical)" }}
+          >
+            ← Try Another Repo
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
