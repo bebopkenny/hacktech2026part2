@@ -6,6 +6,7 @@ Routes:
   GET  /scan/{scan_id}/status — poll for status: cloning|scanning|analyzing|complete|error
   GET  /findings/{scan_id}    — fetch results once complete
   GET  /health                — liveness probe for the deploy script and load balancers
+  POST /webhook/github        — GitHub push event receiver (HMAC-verified)
   WS   /ws                    — live event stream: scan_started, semgrep_done,
                                 finding_ready, scan_complete
 
@@ -34,6 +35,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 import backboard_client
+import webhooks
 import ws
 from analyzer import analyze_finding
 from context import assemble_context
@@ -60,6 +62,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(webhooks.router)
 
 # scan_id → {status, progress, raw_count, confirmed_count, findings, error}
 scans: dict[str, dict] = {}
