@@ -161,33 +161,94 @@ export default function App() {
     }, 3000 + MOCK_FINDINGS.length * 900 + 400);
   }, []);
 
+  // REST polling driver — used when the WebSocket isn't available
+  // (Vercel rewrites don't proxy WS; falls back to /scan/{id}/status polling).
+  const pollScanProgress = useCallback(async (scanId) => {
+    let lastDone = -1;
+    while (true) {
+      let s;
+      try {
+        const sRes = await fetch(`${API}/scan/${scanId}/status`);
+        if (!sRes.ok) throw new Error(`status ${sRes.status}`);
+        s = await sRes.json();
+      } catch {
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+
+      // progress is "{done}/{total} findings" once analyzing
+      const m = (s.progress || "").match(/(\d+)\s*\/\s*(\d+)/);
+      if (m) {
+        const done = parseInt(m[1], 10);
+        const total = parseInt(m[2], 10);
+        if (done !== lastDone) {
+          lastDone = done;
+          setProgress({
+            step: total === 0 || done === 0
+              ? `Semgrep found ${total} candidates — running AI analysis…`
+              : `Analysing finding ${done} of ${total}…`,
+            pct: total ? 35 + Math.round((done / total) * 55) : 35,
+            raw_count: total,
+          });
+        }
+      } else if (s.status === "cloning") {
+        setProgress({ step: "Cloning repository…", pct: 10, raw_count: 0 });
+      } else if (s.status === "scanning") {
+        setProgress({ step: "Running Semgrep…", pct: 25, raw_count: 0 });
+      }
+
+      if (s.status === "complete") {
+        try {
+          const fRes = await fetch(`${API}/findings/${scanId}`);
+          const f = await fRes.json();
+          setFindings(f.findings || []);
+          setProgress({ step: "Scan complete", pct: 100, raw_count: f.raw_count });
+          setPhase("done");
+        } catch {
+          /* leave UI as-is */
+        }
+        return;
+      }
+      if (s.status === "error") {
+        setProgress({ step: `Error: ${s.error || "scan failed"}`, pct: 100, raw_count: 0 });
+        setPhase("done");
+        return;
+      }
+
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }, []);
+
   const handleScan = useCallback(async ({ url, pat }) => {
     setRepoUrl(url);
-
-    if (!connected) {
-      // No backend — run mock
-      setUseMock(true);
-      runMockScan(url);
-      return;
-    }
-
     setUseMock(false);
     setPhase("scanning");
     setFindings([]);
     setProgress({ step: "Submitting…", pct: 5, raw_count: 0 });
 
+    let scanId;
     try {
-      await fetch(`${API}/scan`, {
+      const res = await fetch(`${API}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, pat: pat || undefined }),
       });
+      if (!res.ok) throw new Error(`scan failed: ${res.status}`);
+      const data = await res.json();
+      scanId = data.scan_id;
     } catch {
-      // Fall back to mock if backend unreachable
+      // backend unreachable — fall back to mock
       setUseMock(true);
       runMockScan(url);
+      return;
     }
-  }, [connected, runMockScan]);
+
+    // If WS is connected, scan_started/finding_ready/scan_complete events
+    // will drive the UI. Otherwise poll REST for progress.
+    if (!connected) {
+      pollScanProgress(scanId);
+    }
+  }, [connected, runMockScan, pollScanProgress]);
 
   const handleReset = () => {
     setPhase("idle");
@@ -197,7 +258,7 @@ export default function App() {
   };
 
   const exploitable = findings.filter((f) => f.exploitable);
-  const suppressed = findings.filter((f) => !f.exploitable);
+  const suppressed = phase === "done" ? Math.max(0, progress.raw_count - exploitable.length) : 0;
   const escalations = findings.filter((f) => f.escalated_from);
 
   return (
@@ -245,7 +306,7 @@ export default function App() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 animate-fade-in-up">
                 <StatCard label="Raw Findings" value={progress.raw_count} color="var(--muted)" />
                 <StatCard label="Confirmed Exploitable" value={exploitable.length} color="var(--critical)" glow />
-                <StatCard label="False Positives Filtered" value={suppressed.length} color="var(--low)" />
+                <StatCard label="False Positives Filtered" value={suppressed} color="var(--low)" />
                 <StatCard label="Severity Escalations" value={escalations.length} color="var(--medium)" />
               </div>
             )}
@@ -279,19 +340,13 @@ export default function App() {
               <div className="space-y-4">
                 <RiskScore findings={findings} scanning={phase === "scanning"} />
 
-                {phase === "done" && suppressed.length > 0 && (
+                {phase === "done" && suppressed > 0 && (
                   <div className="border border-[var(--border)] rounded-lg p-4 bg-[var(--bg2)]">
                     <p className="mono text-xs text-[var(--muted)] tracking-widest mb-3 uppercase">Suppressed</p>
-                    <div className="space-y-2">
-                      {suppressed.map((f, i) => (
-                        <div key={i} className="flex items-start gap-2 text-xs text-[var(--muted)]">
-                          <svg className="w-3 h-3 mt-0.5 text-[var(--low)] flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                          </svg>
-                          <span className="mono">{f.file}:{f.line} — {f.rule_id.split(".").pop()}</span>
-                        </div>
-                      ))}
-                    </div>
+                    <p className="text-2xl font-black mono" style={{ color: "var(--low)" }}>{suppressed}</p>
+                    <p className="mono text-xs text-[var(--muted)] mt-2">
+                      findings Semgrep flagged but the reasoning model confirmed as non-exploitable.
+                    </p>
                     <p className="mono text-xs text-[var(--muted)] mt-3 pt-3 border-t border-[var(--border)]">
                       Sanitization or framework-level protection confirmed. Not exploitable.
                     </p>
