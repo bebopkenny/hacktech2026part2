@@ -46,10 +46,6 @@ def _get_client() -> OpenAI:
 
 
 _MODEL = os.getenv("K2_MODEL", "MBZUAI-IFM/K2-Think-v2")
-# Cap K2's response. Verdicts fit in <1k tokens; the rest is reasoning prose
-# we don't surface to the user. Trimming this is the cheapest per-call speedup
-# since K2 generation is sequential and time-per-token dominates.
-_MAX_TOKENS = int(os.getenv("K2_MAX_TOKENS", "2048"))
 
 
 _PROMPT = """\
@@ -148,7 +144,7 @@ def _call_k2(prompt: str) -> str:
     client = _get_client()
     response = client.chat.completions.create(
         model=_MODEL,
-        max_tokens=_MAX_TOKENS,
+        max_tokens=4096,
         temperature=0.2,
         stream=False,
         messages=[{"role": "user", "content": prompt}],
