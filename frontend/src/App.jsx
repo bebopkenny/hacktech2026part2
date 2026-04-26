@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import Header from "./Header.jsx";
 import ScanForm from "./ScanForm.jsx";
 import ScanProgress from "./ScanProgress.jsx";
@@ -9,6 +9,19 @@ import { useWebSocket } from "./useWebSocket.js";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const WS_URL = API.replace(/^http/, "ws") + "/ws";
+
+// Shareable URLs: ?scan=<id> rehydrates a session from the backend on load.
+function readScanIdFromUrl() {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("scan");
+}
+function writeScanIdToUrl(scanId) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (scanId) url.searchParams.set("scan", scanId);
+  else url.searchParams.delete("scan");
+  window.history.replaceState(null, "", url.toString());
+}
 
 // ── mock data so the UI looks alive without a backend ──────────────────────
 const MOCK_FINDINGS = [
@@ -122,6 +135,7 @@ export default function App() {
     if (data.type === "scan_started") {
       // New scan takes over the dashboard — webhook-triggered or manual.
       currentScanIdRef.current = data.scan_id || null;
+      if (data.scan_id) writeScanIdToUrl(data.scan_id);
       setPhase("scanning");
       setFindings([]);
       setProgress({ step: "Cloning repository…", pct: 10, raw_count: 0 });
@@ -252,6 +266,7 @@ export default function App() {
       // Latch onto this scan_id so stale broadcasts from earlier scans get
       // filtered out before scan_started arrives over the WebSocket.
       currentScanIdRef.current = scanId;
+      writeScanIdToUrl(scanId);
     } catch {
       // backend unreachable — fall back to mock
       setUseMock(true);
@@ -266,12 +281,55 @@ export default function App() {
     }
   }, [connected, runMockScan, pollScanProgress]);
 
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
+    currentScanIdRef.current = null;
+    writeScanIdToUrl(null);
     setPhase("idle");
     setFindings([]);
     setProgress({ step: "", pct: 0, raw_count: 0 });
     setRepoUrl("");
-  };
+    setUseMock(false);
+  }, []);
+
+  // Rehydrate a session from ?scan=<id> on first mount (and on back/forward
+  // navigation). Stale or unknown ids fall back to the idle screen.
+  const rehydrateFromUrl = useCallback(async (scanId) => {
+    if (!scanId) return;
+    let f;
+    try {
+      const res = await fetch(`${API}/findings/${scanId}`);
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      f = await res.json();
+    } catch {
+      writeScanIdToUrl(null);
+      return;
+    }
+    currentScanIdRef.current = scanId;
+    if (f.url) setRepoUrl(f.url);
+    setFindings(f.findings || []);
+    if (f.status === "complete") {
+      setProgress({ step: "Scan complete", pct: 100, raw_count: f.raw_count });
+      setPhase("done");
+    } else if (f.status === "error") {
+      setProgress({ step: `Error: ${f.error || "scan failed"}`, pct: 100, raw_count: f.raw_count });
+      setPhase("done");
+    } else {
+      setPhase("scanning");
+      setProgress({ step: "Resuming scan…", pct: 35, raw_count: f.raw_count });
+      pollScanProgress(scanId);
+    }
+  }, [pollScanProgress]);
+
+  useEffect(() => {
+    rehydrateFromUrl(readScanIdFromUrl());
+    const onPop = () => {
+      const id = readScanIdFromUrl();
+      if (id) rehydrateFromUrl(id);
+      else handleReset();
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [rehydrateFromUrl, handleReset]);
 
   const exploitable = findings.filter((f) => f.exploitable);
   const suppressed = phase === "done" ? Math.max(0, progress.raw_count - exploitable.length) : 0;
@@ -279,7 +337,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[var(--bg)] grid-bg">
-      <Header mode={useMock ? "demo" : connected ? "live" : "polling"} />
+      <Header mode={useMock ? "demo" : connected ? "live" : "polling"} onHome={handleReset} />
 
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-8 space-y-8">
         {/* Hero tagline */}
