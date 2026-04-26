@@ -80,7 +80,6 @@ def run_semgrep(repo_path: str) -> list[dict]:
         "--config", "p/python",
         "--max-target-bytes", "5000000",
         "--timeout", "60",
-        "--metrics", "off",  # skip telemetry HTTP call (~100-500ms saved per scan)
         "--json",
         "--output", output_path,
         repo_path,

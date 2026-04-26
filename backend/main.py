@@ -42,22 +42,26 @@ from context import assemble_context
 from models import ScanRequest
 from scanner import clone_repo, run_semgrep
 
-# Accept https://github.com/<owner>/<repo>, optional .git suffix, optional
-# trailing slash. Owner/repo allow alphanumerics, dot, dash, underscore — the
-# character set GitHub itself uses. Anything else is a typo or non-GitHub host.
+# Accept any github.com URL that has owner/repo as the first two path segments.
+# Anything past those segments (e.g. /tree/main, /blob/.../file.js) is stripped
+# so users can paste from the browser bar without "Invalid URL" rejections.
+# Also accepts www.github.com and the optional .git suffix.
 _GITHUB_URL_RE = re.compile(
-    r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?/?$"
+    r"^https?://(?:www\.)?github\.com/(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?(?:/.*)?/?$"
 )
 
 
 def _validate_repo_url(url: str) -> str:
     cleaned = (url or "").strip()
-    if not _GITHUB_URL_RE.match(cleaned):
+    m = _GITHUB_URL_RE.match(cleaned)
+    if not m:
         raise HTTPException(
             status_code=400,
             detail="Invalid URL. Expected a public GitHub repository, e.g. https://github.com/owner/repo",
         )
-    return cleaned
+    # Normalize to canonical https://github.com/<owner>/<repo> so URL dedupe in
+    # _find_existing_scan and the repo banner in the UI agree on one shape.
+    return f"https://github.com/{m.group('owner')}/{m.group('repo')}"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 log = logging.getLogger("pipeline")
