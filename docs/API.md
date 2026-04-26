@@ -6,12 +6,19 @@ CORS is wide open, so the frontend can call directly from any origin.
 All requests/responses are JSON. There is **no authentication** on the API
 (demo scope).
 
-**Per-repo memory:** when the backend has `BACKBOARD_API_KEY` configured,
-findings persist across scans of the same repo. The first scan of a repo is
-just analysis; subsequent scans of the same `url` get prior-finding context
-injected into the reasoning prompt, so the model can flag recurring or
-recently-fixed issues. No frontend changes needed — the API surface is
-identical, the `findings` array just becomes higher-quality over time.
+**Per-repo memory (Backboard):** when the backend has `BACKBOARD_API_KEY`
+configured, findings persist across scans of the same repo via Backboard's
+thread + memory API. The first scan of a repo is just analysis; subsequent
+scans of the same `url` get prior-finding context injected into the reasoning
+prompt, so the model can flag recurring vs. fixed vs. new issues.
+
+No frontend changes needed — the API surface is identical, the `findings`
+array's prose fields (`taint_path`, `auth_gap`, `exploit_steps`, `fix`) just
+become richer on re-scans (e.g. *"This SQLi at users.js:41 was flagged in the
+previous scan and remains unfixed"*).
+
+If `BACKBOARD_API_KEY` is unset or Backboard is unreachable, scans still run —
+just without memory. The frontend doesn't need to detect this state.
 
 ---
 
