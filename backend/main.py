@@ -10,7 +10,14 @@ Routes:
 In-memory store (scans dict) is fine for demo — no database needed.
 Pipeline runs in a background threading.Thread so the POST returns immediately.
 """
+# ruff: noqa: E402 — load_dotenv must run before analyzer/backboard_client are
+# imported, since those modules read env vars at import time.
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 import shutil
 import threading
 import uuid
@@ -32,6 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# scan_id → {status, progress, raw_count, confirmed_count, findings, error}
 scans: dict[str, dict] = {}
 _lock = threading.Lock()
 
@@ -157,5 +165,3 @@ def scan_findings(scan_id: str) -> dict:
         "confirmed_count": scan["confirmed_count"],
         "findings": scan["findings"],
     }
-
-

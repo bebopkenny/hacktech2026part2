@@ -4,11 +4,12 @@ services:
     expose:
       - "8000"
     ports:
-      - "8000:8000"  # remove if you only want Caddy to expose the API
+      - "8000:8000"
     environment:
       - K2_API_KEY=${K2_API_KEY}
-      - K2_BASE_URL=${K2_BASE_URL:-https://api.k2think.ai/v1}
-      - K2_MODEL=${K2_MODEL:-MBZUAI-IFM/K2-Think-v2}
+      - K2_BASE_URL=${K2_BASE_URL}
+      - K2_MODEL=${K2_MODEL}
+      - SEMGREP_APP_TOKEN=${SEMGREP_APP_TOKEN}
       - BACKBOARD_API_KEY=${BACKBOARD_API_KEY:-}
       - BACKBOARD_MODEL=${BACKBOARD_MODEL:-gpt-4o-mini}
     volumes:
