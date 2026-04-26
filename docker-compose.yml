@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      # - K2_API_KEY=${K2_API_KEY}  # uncomment if using K2-Think-v2
+    volumes:
+      - /tmp/sentinelai:/tmp/sentinelai  # cloned repos land here, cleaned up after each scan
+
+  # frontend served separately (Vite dev server or Vercel)
+  # add nginx service here if you want to serve the built frontend from Vultr

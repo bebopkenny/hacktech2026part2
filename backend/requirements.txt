@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+httpx
+pydantic
+anthropic
+# openai  # uncomment if using K2-Think-v2 instead of Claude
