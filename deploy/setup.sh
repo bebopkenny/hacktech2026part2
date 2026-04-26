@@ -9,6 +9,7 @@ set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/bebopkenny/hacktech2026part2.git}"
 APP_DIR="${APP_DIR:-/opt/sentinelai}"
+BRANCH="${BRANCH:-main}"
 
 echo ">>> apt update + install docker, compose plugin, git"
 apt-get update
@@ -34,13 +35,16 @@ ufw allow 80/tcp || true
 ufw allow 443/tcp || true
 yes | ufw enable || true
 
-echo ">>> clone or update repo at ${APP_DIR}"
+echo ">>> clone or update repo at ${APP_DIR} (branch: ${BRANCH})"
 if [ -d "${APP_DIR}/.git" ]; then
   git -C "${APP_DIR}" fetch --all --prune
-  git -C "${APP_DIR}" reset --hard origin/main
+  git -C "${APP_DIR}" checkout "${BRANCH}"
+  git -C "${APP_DIR}" reset --hard "origin/${BRANCH}"
 else
-  git clone "${REPO_URL}" "${APP_DIR}"
+  git clone --branch "${BRANCH}" "${REPO_URL}" "${APP_DIR}"
 fi
+# Persist the chosen branch so redeploy.sh tracks the same one.
+echo "${BRANCH}" > "${APP_DIR}/.branch"
 
 if [ ! -f "${APP_DIR}/.env" ]; then
   echo ""

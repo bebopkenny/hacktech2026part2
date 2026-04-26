@@ -6,8 +6,10 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/sentinelai}"
 
 cd "${APP_DIR}"
+BRANCH="${BRANCH:-$(cat .branch 2>/dev/null || echo main)}"
 git fetch --all --prune
-git reset --hard origin/main
+git checkout "${BRANCH}"
+git reset --hard "origin/${BRANCH}"
 
 # If .env defines DOMAIN, bring up Caddy too (auto-HTTPS).
 PROFILE_ARGS=()
