@@ -33,6 +33,21 @@ _MAP_PATH = Path(os.getenv("BACKBOARD_MAP_PATH", "/tmp/sentinelai/backboard_repo
 _TIMEOUT = 60.0
 _lock = threading.Lock()
 
+# Reuse a single httpx.Client across calls so each request doesn't pay the
+# TLS handshake cost. Lazy-init under a lock so importing this module never
+# triggers socket setup unless Backboard is actually used.
+_client: httpx.Client | None = None
+_client_lock = threading.Lock()
+
+
+def _http() -> httpx.Client:
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                _client = httpx.Client(timeout=_TIMEOUT)
+    return _client
+
 _SYSTEM_PROMPT = (
     "You are an archivist for security scans of a single GitHub repository. "
     "You receive lists of findings from each scan and answer questions about "
@@ -80,32 +95,32 @@ def _get_or_create_for_repo(repo_url: str) -> tuple[str, str] | None:
             return e["assistant_id"], e["thread_id"]
 
         try:
-            with httpx.Client(timeout=_TIMEOUT) as c:
-                r = c.post(
-                    f"{_BASE}/assistants",
-                    headers=_headers(),
-                    json={
-                        "name": f"SentinelAI: {repo_url}",
-                        "system_prompt": _SYSTEM_PROMPT,
-                        "model": _MODEL,
-                    },
-                )
-                r.raise_for_status()
-                assistant_id = r.json().get("assistant_id") or r.json().get("id")
-                if not assistant_id:
-                    log.warning("Backboard returned no assistant_id: %r", r.json())
-                    return None
+            c = _http()
+            r = c.post(
+                f"{_BASE}/assistants",
+                headers=_headers(),
+                json={
+                    "name": f"SentinelAI: {repo_url}",
+                    "system_prompt": _SYSTEM_PROMPT,
+                    "model": _MODEL,
+                },
+            )
+            r.raise_for_status()
+            assistant_id = r.json().get("assistant_id") or r.json().get("id")
+            if not assistant_id:
+                log.warning("Backboard returned no assistant_id: %r", r.json())
+                return None
 
-                r = c.post(
-                    f"{_BASE}/assistants/{assistant_id}/threads",
-                    headers=_headers(),
-                    json={},
-                )
-                r.raise_for_status()
-                thread_id = r.json().get("thread_id") or r.json().get("id")
-                if not thread_id:
-                    log.warning("Backboard returned no thread_id: %r", r.json())
-                    return None
+            r = c.post(
+                f"{_BASE}/assistants/{assistant_id}/threads",
+                headers=_headers(),
+                json={},
+            )
+            r.raise_for_status()
+            thread_id = r.json().get("thread_id") or r.json().get("id")
+            if not thread_id:
+                log.warning("Backboard returned no thread_id: %r", r.json())
+                return None
         except (httpx.HTTPError, KeyError, ValueError) as e:
             log.warning("Backboard create failed for %s: %s", repo_url, e)
             return None
@@ -130,23 +145,22 @@ def get_history_summary(repo_url: str) -> str:
     _, thread_id = pair
 
     try:
-        with httpx.Client(timeout=_TIMEOUT) as c:
-            r = c.post(
-                f"{_BASE}/threads/{thread_id}/messages",
-                headers=_headers(),
-                json={
-                    "content": (
-                        "Summarize the security findings from prior scans of this "
-                        "repository, if any. List each with rule_id, file:line, "
-                        "severity, and exploitability verdict. If there are no prior "
-                        "scans, reply with exactly: 'No prior scans.'"
-                    ),
-                    "stream": False,
-                    "memory": "Readonly",
-                },
-            )
-            r.raise_for_status()
-            text = (r.json().get("content") or "").strip()
+        r = _http().post(
+            f"{_BASE}/threads/{thread_id}/messages",
+            headers=_headers(),
+            json={
+                "content": (
+                    "Summarize the security findings from prior scans of this "
+                    "repository, if any. List each with rule_id, file:line, "
+                    "severity, and exploitability verdict. If there are no prior "
+                    "scans, reply with exactly: 'No prior scans.'"
+                ),
+                "stream": False,
+                "memory": "Readonly",
+            },
+        )
+        r.raise_for_status()
+        text = (r.json().get("content") or "").strip()
     except (httpx.HTTPError, KeyError, ValueError) as e:
         log.warning("Backboard get_history failed for %s: %s", repo_url, e)
         return ""
@@ -178,13 +192,12 @@ def append_findings(repo_url: str, findings: list[dict]) -> None:
     content = f"New scan completed. Findings:\n{body}"
 
     try:
-        with httpx.Client(timeout=_TIMEOUT) as c:
-            r = c.post(
-                f"{_BASE}/threads/{thread_id}/messages",
-                headers=_headers(),
-                json={"content": content, "stream": False, "memory": "Auto"},
-            )
-            r.raise_for_status()
-            log.info("Backboard appended %d findings for %s", len(findings), repo_url)
+        r = _http().post(
+            f"{_BASE}/threads/{thread_id}/messages",
+            headers=_headers(),
+            json={"content": content, "stream": False, "memory": "Auto"},
+        )
+        r.raise_for_status()
+        log.info("Backboard appended %d findings for %s", len(findings), repo_url)
     except (httpx.HTTPError, KeyError, ValueError) as e:
         log.warning("Backboard append failed for %s: %s", repo_url, e)

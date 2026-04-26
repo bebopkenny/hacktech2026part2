@@ -71,24 +71,29 @@ def run_semgrep(repo_path: str) -> list[dict]:
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         output_path = tmp.name
 
+    cmd = [
+        "semgrep",
+        "--config", "p/owasp-top-ten",
+        "--config", "p/secrets",
+        "--config", "p/sql-injection",
+        "--config", "p/nodejs",
+        "--config", "p/python",
+        "--max-target-bytes", "5000000",
+        "--timeout", "60",
+        "--metrics", "off",  # skip telemetry HTTP call (~100-500ms saved per scan)
+        "--json",
+        "--output", output_path,
+        repo_path,
+    ]
+    # Optional explicit job count for constrained Docker hosts where semgrep's
+    # auto-detect (= os.cpu_count()) may not reflect the cgroup CPU quota. Left
+    # unset by default so semgrep uses its own default (all detected cores).
+    jobs = os.getenv("SEMGREP_JOBS")
+    if jobs:
+        cmd.extend(["--jobs", jobs])
+
     try:
-        subprocess.run(
-            [
-                "semgrep",
-                "--config", "p/owasp-top-ten",
-                "--config", "p/secrets",
-                "--config", "p/sql-injection",
-                "--config", "p/nodejs",
-                "--config", "p/python",
-                "--max-target-bytes", "5000000",
-                "--timeout", "60",
-                "--json",
-                "--output", output_path,
-                repo_path,
-            ],
-            capture_output=True,
-            text=True,
-        )
+        subprocess.run(cmd, capture_output=True, text=True)
         with open(output_path, "r") as f:
             data = json.load(f)
         return data.get("results", [])
