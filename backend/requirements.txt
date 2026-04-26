@@ -1,7 +1,8 @@
 fastapi
-uvicorn
+uvicorn[standard]
 httpx
 pydantic
 openai
 python-dotenv
 semgrep
+websockets
