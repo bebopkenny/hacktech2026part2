@@ -1,0 +1,188 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #060810;
+  --bg2: #0c1020;
+  --surface: #111827;
+  --border: #1e2d45;
+  --accent: #00d4ff;
+  --accent2: #ff3366;
+  --accent3: #7c3aed;
+  --text: #e2e8f0;
+  --muted: #64748b;
+  --critical: #ff3366;
+  --high: #ff6b35;
+  --medium: #fbbf24;
+  --low: #34d399;
+  --info: #60a5fa;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Syne', sans-serif;
+  overflow-x: hidden;
+}
+
+.mono { font-family: 'Space Mono', monospace; }
+
+/* Scanline overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 212, 255, 0.015) 2px,
+    rgba(0, 212, 255, 0.015) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Noise texture */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 9998;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* Glow effects */
+.glow-cyan { box-shadow: 0 0 20px rgba(0, 212, 255, 0.3), 0 0 60px rgba(0, 212, 255, 0.1); }
+.glow-red { box-shadow: 0 0 20px rgba(255, 51, 102, 0.3), 0 0 60px rgba(255, 51, 102, 0.1); }
+.text-glow { text-shadow: 0 0 20px rgba(0, 212, 255, 0.6); }
+
+/* Animations */
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+@keyframes data-flow {
+  0% { stroke-dashoffset: 100; }
+  100% { stroke-dashoffset: 0; }
+}
+
+.animate-fade-in-up { animation: fade-in-up 0.4s ease forwards; }
+.animate-pulse-slow { animation: pulse-slow 2s ease-in-out infinite; }
+.cursor-blink { animation: blink 1s step-end infinite; }
+
+/* Finding cards */
+.finding-card {
+  animation: fade-in-up 0.35s ease forwards;
+  border-left: 3px solid var(--border);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.finding-card:hover { border-left-color: var(--accent); box-shadow: -4px 0 16px rgba(0,212,255,0.15); }
+.finding-card.critical { border-left-color: var(--critical); }
+.finding-card.high { border-left-color: var(--high); }
+.finding-card.medium { border-left-color: var(--medium); }
+.finding-card.low { border-left-color: var(--low); }
+
+/* Input styling */
+.cyber-input {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  color: var(--text);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.cyber-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0,212,255,0.1), inset 0 0 20px rgba(0,212,255,0.05);
+}
+.cyber-input::placeholder { color: var(--muted); }
+
+/* Button */
+.cyber-btn {
+  background: var(--accent);
+  color: #000;
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  transition: all 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+.cyber-btn:hover { box-shadow: 0 0 24px rgba(0,212,255,0.5); transform: translateY(-1px); }
+.cyber-btn:active { transform: translateY(0); }
+.cyber-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* Progress bar */
+@keyframes progress-stripe {
+  0% { background-position: 0 0; }
+  100% { background-position: 40px 0; }
+}
+.progress-bar {
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    rgba(0,212,255,0.6) 50%,
+    var(--accent) 100%
+  );
+  background-size: 200% 100%;
+  animation: progress-stripe 1.5s linear infinite;
+}
+
+/* Risk score ring */
+.risk-ring {
+  transform: rotate(-90deg);
+  transform-origin: center;
+}
+
+/* Code block */
+.code-block {
+  font-family: 'Space Mono', monospace;
+  font-size: 0.75rem;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+
+/* Severity badge */
+.badge-critical { background: rgba(255,51,102,0.15); color: var(--critical); border: 1px solid rgba(255,51,102,0.3); }
+.badge-high { background: rgba(255,107,53,0.15); color: var(--high); border: 1px solid rgba(255,107,53,0.3); }
+.badge-medium { background: rgba(251,191,36,0.15); color: var(--medium); border: 1px solid rgba(251,191,36,0.3); }
+.badge-low { background: rgba(52,211,153,0.15); color: var(--low); border: 1px solid rgba(52,211,153,0.3); }
+.badge-info { background: rgba(96,165,250,0.15); color: var(--info); border: 1px solid rgba(96,165,250,0.3); }
+
+/* Grid lines bg */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(0,212,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
