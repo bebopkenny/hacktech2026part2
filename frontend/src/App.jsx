@@ -246,53 +246,10 @@ export default function App() {
     }
   }, []);
 
-  const handleScan = useCallback(async ({ url, pat }) => {
-    setRepoUrl(url);
-    setUseMock(false);
-    setPhase("scanning");
-    setFindings([]);
-    setProgress({ step: "Submitting…", pct: 5, raw_count: 0 });
-
-    let scanId;
-    try {
-      const res = await fetch(`${API}/scan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, pat: pat || undefined }),
-      });
-      if (!res.ok) throw new Error(`scan failed: ${res.status}`);
-      const data = await res.json();
-      scanId = data.scan_id;
-      // Latch onto this scan_id so stale broadcasts from earlier scans get
-      // filtered out before scan_started arrives over the WebSocket.
-      currentScanIdRef.current = scanId;
-      writeScanIdToUrl(scanId);
-    } catch {
-      // backend unreachable — fall back to mock
-      setUseMock(true);
-      runMockScan(url);
-      return;
-    }
-
-    // If WS is connected, scan_started/finding_ready/scan_complete events
-    // will drive the UI. Otherwise poll REST for progress.
-    if (!connected) {
-      pollScanProgress(scanId);
-    }
-  }, [connected, runMockScan, pollScanProgress]);
-
-  const handleReset = useCallback(() => {
-    currentScanIdRef.current = null;
-    writeScanIdToUrl(null);
-    setPhase("idle");
-    setFindings([]);
-    setProgress({ step: "", pct: 0, raw_count: 0 });
-    setRepoUrl("");
-    setUseMock(false);
-  }, []);
-
-  // Rehydrate a session from ?scan=<id> on first mount (and on back/forward
-  // navigation). Stale or unknown ids fall back to the idle screen.
+  // Rehydrate a session from a scan_id (used by ?scan=<id> on mount, by
+  // back/forward navigation, and by handleScan when the backend returns an
+  // existing scan for the same repo). Stale/unknown ids clear the URL and
+  // drop back to idle.
   const rehydrateFromUrl = useCallback(async (scanId) => {
     if (!scanId) return;
     let f;
@@ -319,6 +276,61 @@ export default function App() {
       pollScanProgress(scanId);
     }
   }, [pollScanProgress]);
+
+  const handleScan = useCallback(async ({ url, pat }) => {
+    setRepoUrl(url);
+    setUseMock(false);
+    setPhase("scanning");
+    setFindings([]);
+    setProgress({ step: "Submitting…", pct: 5, raw_count: 0 });
+
+    let scanId;
+    let existing = false;
+    try {
+      const res = await fetch(`${API}/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, pat: pat || undefined }),
+      });
+      if (!res.ok) throw new Error(`scan failed: ${res.status}`);
+      const data = await res.json();
+      scanId = data.scan_id;
+      existing = !!data.existing;
+      // Latch onto this scan_id so stale broadcasts from earlier scans get
+      // filtered out before scan_started arrives over the WebSocket.
+      currentScanIdRef.current = scanId;
+      writeScanIdToUrl(scanId);
+    } catch {
+      // backend unreachable — fall back to mock
+      setUseMock(true);
+      runMockScan(url);
+      return;
+    }
+
+    if (existing) {
+      // Backend deduped to a prior session for this repo — hydrate from it
+      // directly; no scan_started event will fire because no new pipeline
+      // ran.
+      rehydrateFromUrl(scanId);
+      return;
+    }
+
+    // If WS is connected, scan_started/finding_ready/scan_complete events
+    // will drive the UI. Otherwise poll REST for progress.
+    if (!connected) {
+      pollScanProgress(scanId);
+    }
+  }, [connected, runMockScan, pollScanProgress, rehydrateFromUrl]);
+
+  const handleReset = useCallback(() => {
+    currentScanIdRef.current = null;
+    writeScanIdToUrl(null);
+    setPhase("idle");
+    setFindings([]);
+    setProgress({ step: "", pct: 0, raw_count: 0 });
+    setRepoUrl("");
+    setUseMock(false);
+  }, []);
 
   useEffect(() => {
     rehydrateFromUrl(readScanIdFromUrl());
