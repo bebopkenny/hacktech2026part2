@@ -23,12 +23,17 @@ _CONTEXT_DIRS = ["routes", "middleware", "auth", "db", "models"]
 _MAX_FILES = 10
 
 
-def _read(path: str) -> str | None:
+def _read(path: str, cache: dict[str, str | None] | None = None) -> str | None:
+    if cache is not None and path in cache:
+        return cache[path]
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            return f.read()
+            content = f.read()
     except OSError:
-        return None
+        content = None
+    if cache is not None:
+        cache[path] = content
+    return content
 
 
 def _resolve_import(base_dir: str, imp: str, src_ext: str) -> str | None:
@@ -40,13 +45,13 @@ def _resolve_import(base_dir: str, imp: str, src_ext: str) -> str | None:
     return None
 
 
-def assemble_context(repo_path: str, finding: dict) -> dict:
+def assemble_context(repo_path: str, finding: dict, file_cache: dict[str, str | None] | None = None) -> dict:
     rel_path = finding.get("path", "")
     flagged_abs = os.path.join(repo_path, rel_path)
 
     files: dict[str, str] = {}
 
-    content = _read(flagged_abs)
+    content = _read(flagged_abs, file_cache)
     if content is not None:
         files[rel_path] = content
 
@@ -63,7 +68,7 @@ def assemble_context(repo_path: str, finding: dict) -> dict:
             if resolved and os.path.exists(resolved):
                 rel = os.path.relpath(resolved, repo_path)
                 if rel not in files and len(files) < _MAX_FILES:
-                    c = _read(resolved)
+                    c = _read(resolved, file_cache)
                     if c is not None:
                         files[rel] = c
 
@@ -76,7 +81,7 @@ def assemble_context(repo_path: str, finding: dict) -> dict:
             if os.path.isfile(fpath) and len(files) < _MAX_FILES:
                 rel = os.path.relpath(fpath, repo_path)
                 if rel not in files:
-                    c = _read(fpath)
+                    c = _read(fpath, file_cache)
                     if c is not None:
                         files[rel] = c
 

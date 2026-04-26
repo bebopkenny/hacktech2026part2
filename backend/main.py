@@ -167,15 +167,16 @@ def _update(scan_id: str, **fields) -> None:
         scans[scan_id].update(fields)
 
 
-def _analyze_one(repo_path: str, finding: dict, prior_context: str) -> tuple[dict | None, dict]:
+def _analyze_one(repo_path: str, finding: dict, prior_context: str, file_cache: dict) -> tuple[dict | None, dict]:
     """Run context-assembly + K2 analysis for a single Semgrep finding.
 
     Returns (verdict_or_None, finding). Verdict is None if anything raises;
     finding is returned alongside so the caller can correlate after as_completed
-    reorders results.
+    reorders results. file_cache is a per-scan dict shared across workers so
+    files in routes/middleware/auth/db/models aren't re-read for every finding.
     """
     try:
-        bundle = assemble_context(repo_path, finding)
+        bundle = assemble_context(repo_path, finding, file_cache=file_cache)
         verdict = analyze_finding(bundle, prior_context=prior_context)
         return verdict, finding
     except Exception as e:
@@ -194,6 +195,14 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         log.info("[%s] cloned to %s", scan_id, repo_path)
         _update(scan_id, status="scanning")
 
+        # Backboard's prior-context fetch is independent of semgrep, so kick
+        # it off in the background and resolve it once we actually need it
+        # (just before the K2 fan-out). Saves the entire Backboard round-trip
+        # off the critical path.
+        prior_pool = ThreadPoolExecutor(max_workers=1)
+        prior_future = prior_pool.submit(backboard_client.get_history_summary, url)
+        prior_pool.shutdown(wait=False)
+
         log.info("[%s] running semgrep…", scan_id)
         raw = run_semgrep(repo_path)
         total = len(raw)
@@ -201,9 +210,11 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         _update(scan_id, status="analyzing", raw_count=total, progress=f"0/{total} findings")
         _broadcast_sync({"type": "semgrep_done", "scan_id": scan_id, "count": total})
 
-        # Pull prior-scan context from Backboard (no-op if BACKBOARD_API_KEY unset
-        # or this is the first scan of this repo).
-        prior_context = backboard_client.get_history_summary(url)
+        try:
+            prior_context = prior_future.result(timeout=30)
+        except Exception as e:
+            log.warning("[%s] backboard prior fetch failed: %s", scan_id, e)
+            prior_context = ""
         # Structured prior severities (used for escalated_from detection).
         prior_snapshot = snapshots.load(url)
 
@@ -211,10 +222,13 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         # Each finding is one independent K2 round-trip; up to K2_PARALLEL run
         # concurrently. _update() is already lock-protected; confirmed.append()
         # happens only on the main thread (in the as_completed loop).
+        # file_cache is shared across workers so the same context dirs aren't
+        # re-read once per finding.
         confirmed: list[dict] = []
         done = 0
+        file_cache: dict[str, str | None] = {}
         with ThreadPoolExecutor(max_workers=_K2_PARALLEL) as ex:
-            futures = [ex.submit(_analyze_one, repo_path, f, prior_context) for f in raw]
+            futures = [ex.submit(_analyze_one, repo_path, f, prior_context, file_cache) for f in raw]
             for fut in as_completed(futures):
                 verdict, finding = fut.result()
                 done += 1
