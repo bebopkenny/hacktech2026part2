@@ -197,7 +197,7 @@ export default function App() {
   };
 
   const exploitable = findings.filter((f) => f.exploitable);
-  const suppressed = findings.filter((f) => !f.exploitable);
+  const suppressed = phase === "done" ? Math.max(0, progress.raw_count - exploitable.length) : 0;
   const escalations = findings.filter((f) => f.escalated_from);
 
   return (
@@ -245,7 +245,7 @@ export default function App() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 animate-fade-in-up">
                 <StatCard label="Raw Findings" value={progress.raw_count} color="var(--muted)" />
                 <StatCard label="Confirmed Exploitable" value={exploitable.length} color="var(--critical)" glow />
-                <StatCard label="False Positives Filtered" value={suppressed.length} color="var(--low)" />
+                <StatCard label="False Positives Filtered" value={suppressed} color="var(--low)" />
                 <StatCard label="Severity Escalations" value={escalations.length} color="var(--medium)" />
               </div>
             )}
@@ -279,19 +279,13 @@ export default function App() {
               <div className="space-y-4">
                 <RiskScore findings={findings} scanning={phase === "scanning"} />
 
-                {phase === "done" && suppressed.length > 0 && (
+                {phase === "done" && suppressed > 0 && (
                   <div className="border border-[var(--border)] rounded-lg p-4 bg-[var(--bg2)]">
                     <p className="mono text-xs text-[var(--muted)] tracking-widest mb-3 uppercase">Suppressed</p>
-                    <div className="space-y-2">
-                      {suppressed.map((f, i) => (
-                        <div key={i} className="flex items-start gap-2 text-xs text-[var(--muted)]">
-                          <svg className="w-3 h-3 mt-0.5 text-[var(--low)] flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                          </svg>
-                          <span className="mono">{f.file}:{f.line} — {f.rule_id.split(".").pop()}</span>
-                        </div>
-                      ))}
-                    </div>
+                    <p className="text-2xl font-black mono" style={{ color: "var(--low)" }}>{suppressed}</p>
+                    <p className="mono text-xs text-[var(--muted)] mt-2">
+                      findings Semgrep flagged but the reasoning model confirmed as non-exploitable.
+                    </p>
                     <p className="mono text-xs text-[var(--muted)] mt-3 pt-3 border-t border-[var(--border)]">
                       Sanitization or framework-level protection confirmed. Not exploitable.
                     </p>
