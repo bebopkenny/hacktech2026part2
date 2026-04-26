@@ -143,7 +143,7 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
     repo_path: str | None = None
     try:
         log.info("[%s] starting pipeline for %s", scan_id, url)
-        _broadcast_sync({"type": "scan_started"})
+        _broadcast_sync({"type": "scan_started", "scan_id": scan_id, "url": url})
 
         log.info("[%s] cloning…", scan_id)
         repo_path = clone_repo(url, pat)
@@ -155,7 +155,7 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         total = len(raw)
         log.info("[%s] semgrep done: %d candidate findings", scan_id, total)
         _update(scan_id, status="analyzing", raw_count=total, progress=f"0/{total} findings")
-        _broadcast_sync({"type": "semgrep_done", "count": total})
+        _broadcast_sync({"type": "semgrep_done", "scan_id": scan_id, "count": total})
 
         # Pull prior-scan context from Backboard (no-op if BACKBOARD_API_KEY unset
         # or this is the first scan of this repo).
@@ -201,6 +201,7 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
                     confirmed.append(result)
                     _broadcast_sync({
                         "type": "finding_ready",
+                        "scan_id": scan_id,
                         "finding": result,
                         "index": done - 1,
                         "total": total,
@@ -220,7 +221,7 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
             findings=confirmed,
             progress=f"{total}/{total} findings",
         )
-        _broadcast_sync({"type": "scan_complete", "raw_count": total})
+        _broadcast_sync({"type": "scan_complete", "scan_id": scan_id, "raw_count": total})
 
         log.info("[%s] complete: %d/%d confirmed exploitable", scan_id, len(confirmed), total)
         # Persist this scan for next-scan diff (escalated_from) + Backboard memory.
@@ -229,7 +230,7 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
     except Exception as e:
         log.exception("[%s] pipeline failed", scan_id)
         _update(scan_id, status="error", error=str(e))
-        _broadcast_sync({"type": "scan_error", "error": str(e)})
+        _broadcast_sync({"type": "scan_error", "scan_id": scan_id, "error": str(e)})
     finally:
         if repo_path and os.path.isdir(repo_path):
             shutil.rmtree(repo_path, ignore_errors=True)

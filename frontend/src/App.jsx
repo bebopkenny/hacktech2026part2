@@ -112,14 +112,27 @@ export default function App() {
   const [repoUrl, setRepoUrl] = useState("");
   const [useMock, setUseMock] = useState(false);
   const mockTimer = useRef(null);
+  // Tracks the scan_id we're currently watching. Late-arriving events from
+  // earlier scans (e.g. K2 retries finishing after a new scan started) get
+  // filtered out so they don't pollute the current view.
+  const currentScanIdRef = useRef(null);
 
   // WebSocket handler
   const handleWsMessage = useCallback((data) => {
     if (data.type === "scan_started") {
+      // New scan takes over the dashboard — webhook-triggered or manual.
+      currentScanIdRef.current = data.scan_id || null;
       setPhase("scanning");
       setFindings([]);
       setProgress({ step: "Cloning repository…", pct: 10, raw_count: 0 });
-    } else if (data.type === "semgrep_done") {
+      if (data.url) setRepoUrl(data.url);
+      return;
+    }
+
+    // Drop events that don't match the scan we're currently watching.
+    if (data.scan_id && currentScanIdRef.current && data.scan_id !== currentScanIdRef.current) return;
+
+    if (data.type === "semgrep_done") {
       setProgress({ step: `Semgrep found ${data.count} candidates — running AI analysis…`, pct: 35, raw_count: data.count });
     } else if (data.type === "finding_ready") {
       setFindings((f) => [...f, data.finding]);
@@ -236,6 +249,9 @@ export default function App() {
       if (!res.ok) throw new Error(`scan failed: ${res.status}`);
       const data = await res.json();
       scanId = data.scan_id;
+      // Latch onto this scan_id so stale broadcasts from earlier scans get
+      // filtered out before scan_started arrives over the WebSocket.
+      currentScanIdRef.current = scanId;
     } catch {
       // backend unreachable — fall back to mock
       setUseMock(true);
