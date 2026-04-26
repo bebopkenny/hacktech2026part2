@@ -101,7 +101,31 @@ def _broadcast_sync(msg: dict) -> None:
 
 # scan_id → {status, progress, raw_count, confirmed_count, findings, error}
 scans: dict[str, dict] = {}
+# normalized_url → most-recent scan_id, used to dedupe POST /scan requests so
+# resubmitting the same repo resumes the existing session instead of starting
+# a fresh pipeline.
+_latest_by_url: dict[str, str] = {}
 _lock = threading.Lock()
+
+
+def _normalize_repo_url(url: str) -> str:
+    u = (url or "").strip()
+    if u.endswith(".git"):
+        u = u[:-4]
+    return u.rstrip("/").lower()
+
+
+def _find_existing_scan(url: str) -> str | None:
+    """Return scan_id of the latest non-errored scan for this repo, or None."""
+    key = _normalize_repo_url(url)
+    with _lock:
+        scan_id = _latest_by_url.get(key)
+        if scan_id is None:
+            return None
+        scan = scans.get(scan_id)
+        if scan is None or scan["status"] == "error":
+            return None
+        return scan_id
 
 
 def _new_scan(url: str) -> str:
@@ -116,6 +140,7 @@ def _new_scan(url: str) -> str:
             "findings": [],
             "error": None,
         }
+        _latest_by_url[_normalize_repo_url(url)] = scan_id
     return scan_id
 
 
@@ -250,6 +275,13 @@ def health() -> dict:
 
 @app.post("/scan")
 def start_scan(req: ScanRequest) -> dict:
+    # Resubmitting the same repo URL resumes the latest non-errored session
+    # instead of kicking off a duplicate pipeline. New scans are gated behind
+    # webhook pushes (which always fire) or a different repo URL.
+    existing = _find_existing_scan(req.url)
+    if existing is not None:
+        return {"scan_id": existing, "existing": True}
+
     scan_id = _start_pipeline(req.url, req.pat)
 
     # Fire-and-forget webhook registration so the response doesn't block on
@@ -264,7 +296,7 @@ def start_scan(req: ScanRequest) -> dict:
             daemon=True,
         ).start()
 
-    return {"scan_id": scan_id}
+    return {"scan_id": scan_id, "existing": False}
 
 
 @app.get("/scan/{scan_id}/status")
