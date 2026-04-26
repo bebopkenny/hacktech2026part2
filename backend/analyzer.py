@@ -3,33 +3,43 @@ Sends a finding + context bundle to the reasoning model and parses exploitabilit
 
 analyze_finding(context_bundle) -> dict
   - builds a prompt with finding details + all file contents
-  - calls Claude synchronously (sync so it works inside threading.Thread)
+  - calls K2-Think-v2 synchronously (sync so it works inside threading.Thread)
+  - one retry on transient API errors or unparseable output, with a stricter prompt
+  - strips <think>...</think> blocks (K2 emits chain-of-thought before the answer)
   - strips markdown fences and parses JSON response
   - returns: {exploitable, confidence, taint_path, auth_gap, exploit_steps, severity, fix}
 
-Prompt instructs the model to:
-  - cite specific file:line for every claim
-  - check if input is actually user-controlled
-  - check if sanitization/auth middleware already covers this
-  - NOT invent findings Semgrep didn't flag
-  - respond with ONLY valid JSON (no prose)
+K2-Think-v2 is reached via api.k2think.ai's OpenAI-compatible endpoint, so we use
+the openai SDK pointed at K2_BASE_URL. K2 doesn't expose OpenAI's
+`response_format=json_object` mode (and forcing it would suppress the <think>
+block where the reasoning happens), so we ask for JSON in the prompt and
+post-process.
 
-Falls back to {exploitable: false, ...} if response can't be parsed.
+Falls back to {exploitable: false, ...} if both attempts fail.
 """
 import json
+import logging
 import os
 import re
 
-import anthropic
+from openai import APIError, OpenAI
 
-_client: anthropic.Anthropic | None = None
+log = logging.getLogger("analyzer")
+
+_client: OpenAI | None = None
 
 
-def _get_client() -> anthropic.Anthropic:
+def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        _client = OpenAI(
+            api_key=os.environ["K2_API_KEY"],
+            base_url=os.getenv("K2_BASE_URL", "https://api.k2think.ai/v1"),
+        )
     return _client
+
+
+_MODEL = os.getenv("K2_MODEL", "MBZUAI-IFM/K2-Think-v2")
 
 
 _PROMPT = """\
@@ -51,9 +61,10 @@ semgrep message: {message}
 - Check whether the input is truly user-controlled (not from env vars, config, or other trusted sources).
 - Check if existing middleware or auth already mitigates this path.
 - Do NOT invent findings Semgrep didn't flag.
-- Respond with ONLY valid JSON — no prose, no markdown fences.
 
-## Required JSON schema
+## Output format
+You may reason briefly first, but you MUST end your response with the line `### ANSWER` on its own line, followed by a single JSON object matching this schema and nothing else:
+
 {{
   "exploitable": true or false,
   "confidence": "high" or "medium" or "low",
@@ -63,7 +74,15 @@ semgrep message: {message}
   "severity": "critical" or "high" or "medium" or "low",
   "fix": "one-sentence fix description"
 }}
+
+Keep any reasoning under 300 words. The `### ANSWER` line and JSON object are required.
 """
+
+_RETRY_NUDGE = (
+    "\n\nIMPORTANT: Your previous response did not include a parseable JSON object after `### ANSWER`. "
+    "Reply with at most 100 words of reasoning, then `### ANSWER` on its own line, then ONE JSON object matching the schema. "
+    "No markdown fences, no text after the JSON."
+)
 
 _FALLBACK: dict = {
     "exploitable": False,
@@ -74,6 +93,57 @@ _FALLBACK: dict = {
     "severity": "low",
     "fix": "Review manually — AI analysis failed.",
 }
+
+
+def _extract_json(raw: str) -> dict | None:
+    """Find the JSON object in K2's response.
+
+    K2-Think-v2 narrates reasoning as plain prose (not <think> tags), so we
+    look for an `### ANSWER` marker and parse what follows. Falls back to the
+    LAST balanced {...} block in the response if no marker is present, and
+    finally to scanning forward for any parseable {...}.
+    """
+    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    cleaned = re.sub(r"```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+
+    # Preferred path: split on `### ANSWER` (or `### Answer`, or just `ANSWER:`).
+    marker = re.search(r"###\s*ANSWER\s*\n?|^ANSWER:\s*", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    if marker:
+        cleaned = cleaned[marker.end():].strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: try every balanced {...} from the END of the string backwards
+    # (the JSON usually comes after the prose).
+    starts = [i for i, ch in enumerate(cleaned) if ch == "{"]
+    for start in reversed(starts):
+        depth = 0
+        for i in range(start, len(cleaned)):
+            if cleaned[i] == "{":
+                depth += 1
+            elif cleaned[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(cleaned[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+    return None
+
+
+def _call_k2(prompt: str) -> str:
+    client = _get_client()
+    response = client.chat.completions.create(
+        model=_MODEL,
+        max_tokens=4096,
+        temperature=0.2,
+        stream=False,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 def analyze_finding(context_bundle: dict) -> dict:
@@ -94,18 +164,20 @@ def analyze_finding(context_bundle: dict) -> dict:
         files_block=files_block,
     )
 
-    client = _get_client()
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    for attempt in (1, 2):
+        try:
+            raw = _call_k2(prompt)
+        except APIError as e:
+            log.warning("K2 API error on attempt %d: %s", attempt, e)
+            if attempt == 2:
+                return _FALLBACK.copy()
+            continue
 
-    raw = message.content[0].text.strip()
-    raw = re.sub(r"^```[a-z]*\n?", "", raw)
-    raw = re.sub(r"\n?```$", "", raw)
+        parsed = _extract_json(raw)
+        if parsed is not None:
+            return parsed
 
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return _FALLBACK.copy()
+        log.warning("K2 response unparseable on attempt %d: %r", attempt, raw[:200])
+        prompt = prompt + _RETRY_NUDGE
+
+    return _FALLBACK.copy()

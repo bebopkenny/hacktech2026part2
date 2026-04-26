@@ -1,0 +1,26 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and redeploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VULTR_HOST }}
+          username: ${{ secrets.VULTR_USER }}
+          # Use one of these — set as a GitHub repo secret.
+          # Password auth is simplest if Vultr gave you a root password.
+          # Switch to `key:` if you generate an SSH keypair instead.
+          password: ${{ secrets.VULTR_PASSWORD }}
+          script: |
+            /opt/sentinelai/deploy/redeploy.sh
