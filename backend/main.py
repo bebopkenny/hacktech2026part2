@@ -104,10 +104,11 @@ scans: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
-def _new_scan() -> str:
+def _new_scan(url: str) -> str:
     scan_id = uuid.uuid4().hex
     with _lock:
         scans[scan_id] = {
+            "url": url,
             "status": "cloning",
             "progress": None,
             "raw_count": 0,
@@ -237,7 +238,7 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
 
 
 def _start_pipeline(url: str, pat: str | None) -> str:
-    scan_id = _new_scan()
+    scan_id = _new_scan(url)
     threading.Thread(target=_pipeline, args=(scan_id, url, pat), daemon=True).start()
     return scan_id
 
@@ -285,10 +286,13 @@ def scan_findings(scan_id: str) -> dict:
         raise HTTPException(status_code=404, detail="scan not found")
     return {
         "scan_id": scan_id,
+        "url": scan.get("url"),
         "status": scan["status"],
+        "progress": scan["progress"],
         "raw_count": scan["raw_count"],
         "confirmed_count": scan["confirmed_count"],
         "findings": scan["findings"],
+        "error": scan["error"],
     }
 
 
