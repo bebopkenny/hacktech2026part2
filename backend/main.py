@@ -6,19 +6,24 @@ Routes:
   GET  /scan/{scan_id}/status — poll for status: cloning|scanning|analyzing|complete|error
   GET  /findings/{scan_id}    — fetch results once complete
   GET  /health                — liveness probe for the deploy script and load balancers
+  POST /webhook/github        — GitHub push event receiver (HMAC-verified)
+  WS   /ws                    — live event stream: scan_started, semgrep_done,
+                                finding_ready, scan_complete
 
 In-memory store (scans dict) is fine for demo — no database needed.
 Pipeline runs in a background threading.Thread so the POST returns immediately.
+WebSocket broadcasts are scheduled on the FastAPI event loop (captured at
+startup) so background threads can fan events out to connected clients.
 """
 # ruff: noqa: E402 — load_dotenv must run before analyzer/backboard_client are
 # imported, since those modules read env vars at import time.
-import asyncio
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
+import asyncio
 import logging
 import shutil
 import threading
@@ -29,13 +34,16 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 import backboard_client
+import webhooks
 from analyzer import analyze_finding
 from context import assemble_context
 from models import ScanRequest
 from scanner import clone_repo, run_semgrep
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 log = logging.getLogger("pipeline")
 _K2_PARALLEL = int(os.getenv("K2_PARALLEL", "5"))
+
 
 app = FastAPI(title="SentinelAI")
 app.add_middleware(
@@ -44,6 +52,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(webhooks.router)
 
 # ── WebSocket connection manager ─────────────────────────────────────────────
 
@@ -132,12 +141,18 @@ def _analyze_one(repo_path: str, finding: dict, prior_context: str) -> tuple[dic
 def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
     repo_path: str | None = None
     try:
+        log.info("[%s] starting pipeline for %s", scan_id, url)
         _broadcast_sync({"type": "scan_started"})
+
+        log.info("[%s] cloning…", scan_id)
         repo_path = clone_repo(url, pat)
+        log.info("[%s] cloned to %s", scan_id, repo_path)
         _update(scan_id, status="scanning")
 
+        log.info("[%s] running semgrep…", scan_id)
         raw = run_semgrep(repo_path)
         total = len(raw)
+        log.info("[%s] semgrep done: %d candidate findings", scan_id, total)
         _update(scan_id, status="analyzing", raw_count=total, progress=f"0/{total} findings")
         _broadcast_sync({"type": "semgrep_done", "count": total})
 
@@ -195,9 +210,11 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
         )
         _broadcast_sync({"type": "scan_complete", "raw_count": total})
 
+        log.info("[%s] complete: %d/%d confirmed exploitable", scan_id, len(confirmed), total)
         # Persist this scan's findings to Backboard so the next scan has context.
         backboard_client.append_findings(url, confirmed)
     except Exception as e:
+        log.exception("[%s] pipeline failed", scan_id)
         _update(scan_id, status="error", error=str(e))
         _broadcast_sync({"type": "scan_error", "error": str(e)})
     finally:
