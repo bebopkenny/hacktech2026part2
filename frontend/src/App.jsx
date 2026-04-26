@@ -263,7 +263,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[var(--bg)] grid-bg">
-      <Header wsConnected={connected} />
+      <Header mode={useMock ? "demo" : connected ? "live" : "polling"} />
 
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-8 space-y-8">
         {/* Hero tagline */}
