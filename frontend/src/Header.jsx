@@ -1,6 +1,12 @@
 import React from "react";
 
-export default function Header({ wsConnected }) {
+export default function Header({ mode = "demo" }) {
+  const indicator = {
+    live:    { label: "LIVE",       color: "var(--low)",    glow: "0 0 8px rgba(52,211,153,0.8)" },
+    polling: { label: "POLLING",    color: "var(--accent)", glow: "0 0 8px rgba(0,212,255,0.7)" },
+    demo:    { label: "DEMO MODE",  color: "var(--muted)",  glow: null },
+  }[mode] ?? { label: "DEMO MODE", color: "var(--muted)", glow: null };
+
   return (
     <header className="border-b border-[var(--border)] sticky top-0 z-50" style={{ backdropFilter: "blur(12px)", background: "rgba(6,8,16,0.9)" }}>
       <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex items-center justify-between">
@@ -27,12 +33,10 @@ export default function Header({ wsConnected }) {
           </div>
           <div className="flex items-center gap-2 mono text-xs">
             <span
-              className={"w-2 h-2 rounded-full flex-shrink-0 " + (wsConnected ? "bg-[var(--low)]" : "bg-[var(--muted)]")}
-              style={wsConnected ? { boxShadow: "0 0 8px rgba(52,211,153,0.8)" } : {}}
+              className="w-2 h-2 rounded-full flex-shrink-0"
+              style={{ backgroundColor: indicator.color, ...(indicator.glow ? { boxShadow: indicator.glow } : {}) }}
             />
-            <span className={wsConnected ? "text-[var(--low)]" : "text-[var(--muted)]"}>
-              {wsConnected ? "LIVE" : "DEMO MODE"}
-            </span>
+            <span style={{ color: indicator.color }}>{indicator.label}</span>
           </div>
         </div>
       </div>
