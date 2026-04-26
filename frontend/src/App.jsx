@@ -133,11 +133,26 @@ export default function App() {
   // earlier scans (e.g. K2 retries finishing after a new scan started) get
   // filtered out so they don't pollute the current view.
   const currentScanIdRef = useRef(null);
+  // Mirror of repoUrl readable from the WebSocket handler. Used to decide
+  // whether an incoming scan_started is "for the repo I'm watching" without
+  // putting repoUrl in the handler's deps (which would tear down and reopen
+  // the WebSocket on every URL change).
+  const currentRepoUrlRef = useRef("");
+  useEffect(() => { currentRepoUrlRef.current = repoUrl; }, [repoUrl]);
 
   // WebSocket handler
   const handleWsMessage = useCallback((data) => {
     if (data.type === "scan_started") {
-      // New scan takes over the dashboard — webhook-triggered or manual.
+      // The /ws stream is a global broadcast — every client receives every
+      // scan_started, including ones from other users on other repos. Only
+      // take over the dashboard if (a) it's the scan we already initiated,
+      // or (b) it's a webhook rescan of the repo we're currently viewing.
+      // Otherwise stay where we are; another user's scan should not hijack
+      // our session.
+      const isOurScan = !!data.scan_id && data.scan_id === currentScanIdRef.current;
+      const isCurrentRepo = !!data.url && data.url === currentRepoUrlRef.current;
+      if (!isOurScan && !isCurrentRepo) return;
+
       currentScanIdRef.current = data.scan_id || null;
       if (data.scan_id) writeScanIdToUrl(data.scan_id);
       setScanError(null);
