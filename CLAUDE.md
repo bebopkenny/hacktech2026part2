@@ -1,14 +1,22 @@
 # SentinelAI — Technical Build Spec
 
 ## What This Is
-A security analysis tool. User pastes a GitHub repo URL, backend clones it, runs Semgrep (static analysis), then sends each finding + surrounding code context to a reasoning model that determines if the vulnerability is actually exploitable. Frontend shows results.
+A security analysis tool. User pastes a GitHub repo URL, backend clones it, runs Semgrep (static analysis), then sends each finding + surrounding code context to a reasoning model (K2-Think-v2) that determines if the vulnerability is actually exploitable. Backboard provides per-repo memory so re-scans recognize recurring vs. fixed vs. new findings. Frontend shows results.
 
 ## Architecture
 ```
-React frontend (Vite) → FastAPI backend → Semgrep CLI → Reasoning Model API
+                                         ┌────────────────────────┐
+                                         │ K2-Think-v2 (reasoner) │
+                                         └────────────┬───────────┘
+                                                      │ per-finding verdict
+React (Vite) ──► FastAPI ──► Semgrep CLI ──► analyzer ┤
+                                                      │ scan history
+                                         ┌────────────┴───────────┐
+                                         │ Backboard (memory)     │
+                                         └────────────────────────┘
 ```
 
-No WebSocket. No database. Synchronous pipeline with polling for status.
+No WebSocket. No database (Backboard is the memory store). Synchronous pipeline with polling for status. Backboard is optional — if `BACKBOARD_API_KEY` is unset, the pipeline runs without cross-scan memory.
 
 ---
 
@@ -17,12 +25,13 @@ No WebSocket. No database. Synchronous pipeline with polling for status.
 ```
 sentinelai/
 ├── backend/
-│   ├── main.py              # FastAPI app, all routes
-│   ├── scanner.py           # git clone + semgrep subprocess
+│   ├── main.py              # FastAPI app, all routes, pipeline orchestrator
+│   ├── scanner.py           # git clone + semgrep subprocess (5 rulesets)
 │   ├── context.py           # collect relevant files per finding
-│   ├── analyzer.py          # reasoning model prompt + parse response
+│   ├── analyzer.py          # K2-Think-v2 prompt + parse response
+│   ├── backboard_client.py  # per-repo persistent memory layer
 │   ├── models.py            # pydantic schemas
-│   ├── requirements.txt     # fastapi, uvicorn, httpx
+│   ├── requirements.txt     # fastapi, uvicorn, httpx, openai, semgrep, dotenv
 │   └── Dockerfile
 ├── frontend/
 │   ├── src/
@@ -95,15 +104,17 @@ Two functions:
 
 Keep this simple. For JS: regex for `require()` and `import`. For Python: regex for `import` and `from ... import`. Don't build an AST parser — good enough beats perfect at 3 AM.
 
-### analyzer.py — Reasoning Model
+### analyzer.py — Reasoning Model (K2-Think-v2)
 
-`analyze_finding(context_bundle) -> dict`
+`analyze_finding(context_bundle, prior_context: str = "") -> dict`
 - Builds a prompt with:
   - The Semgrep finding details (rule, file, line, matched code)
   - All collected file contents
-  - Output schema instructions
-- Calls the reasoning model API (Claude or whatever model you're using)
-- Parses the response into structured output
+  - `prior_context` block (from Backboard, see below) — empty string when memory is disabled or it's the first scan of this repo
+  - Output schema instructions, ending with `### ANSWER` marker
+- Calls K2-Think-v2 via `api.k2think.ai`'s OpenAI-compatible endpoint (`openai` SDK with `base_url`).
+- Strips `<think>...</think>` blocks K2 emits before its answer, then parses the JSON object after `### ANSWER`.
+- One automatic retry with a stricter prompt nudge on transient API errors or unparseable output.
 
 **Prompt must request this JSON output:**
 ```json
@@ -123,6 +134,21 @@ Keep this simple. For JS: regex for `require()` and `import`. For Python: regex 
 - Model must not invent vulnerabilities Semgrep didn't flag
 - Model must assess: does sanitization/validation already cover this? Is the input actually user-controlled? Does auth middleware protect this route?
 - If the finding is not exploitable, set exploitable=false and explain why
+
+### backboard_client.py — Per-Repo Memory
+
+Backboard is a hosted thread + memory API ([docs.backboard.io](https://docs.backboard.io)). We use it as a persistent store for "what we've seen on this repo before," so a re-scan after a code change can flag recurring/fixed/new findings instead of treating each scan as cold.
+
+**Architecture decision:** one Backboard *assistant* + one *thread* per GitHub repo URL. Memory in Backboard is assistant-scoped (facts persist across all threads under the same assistant), so a shared assistant would leak repo A's facts into repo B's analysis. Per-repo isolation keeps memory clean.
+
+**Mapping persistence:** `{repo_url: (assistant_id, thread_id)}` is JSON-serialized to `/tmp/sentinelai/backboard_repos.json` (lock-protected with `threading.Lock`). Survives container restarts because `/tmp/sentinelai/` is volume-mounted.
+
+**Three entry points:**
+- `is_enabled() -> bool` — `True` iff `BACKBOARD_API_KEY` is set. Callers short-circuit when `False`.
+- `get_history_summary(repo_url) -> str` — POSTs a "summarize prior findings" message to the repo's thread with `memory: "Readonly"`. Returns the assistant's reply, or `""` on failure / first scan.
+- `append_findings(repo_url, findings) -> None` — POSTs the scan's confirmed findings as one message with `memory: "Auto"`, so Backboard's auto-extraction stores facts for next time.
+
+**Failure mode:** every Backboard call is wrapped in try/except. Outages, rate limits, or malformed responses log a warning and return `""` / `None`. The K2 path keeps working — scans never fail because of Backboard.
 
 ### models.py — Pydantic Schemas
 
@@ -162,17 +188,25 @@ class ScanResult(BaseModel):
 2. run_semgrep(repo_path) → raw_findings
    update status: "analyzing", raw_count = len(raw_findings)
 
-3. for i, finding in enumerate(raw_findings):
+3. prior_context = backboard_client.get_history_summary(url)
+   # "" if Backboard disabled or first scan of this repo
+
+4. for i, finding in enumerate(raw_findings):
      context = assemble_context(repo_path, finding)
-     result = analyze_finding(context)
+     result = analyze_finding(context, prior_context=prior_context)
      if result["exploitable"]:
        append to confirmed findings
      update progress: f"{i+1}/{len(raw_findings)} findings"
 
-4. update status: "complete", set confirmed_count and findings
+5. update status: "complete", set confirmed_count and findings
 
-5. cleanup: shutil.rmtree(repo_path)
+6. backboard_client.append_findings(url, confirmed)
+   # writes this scan's verdicts to the repo's thread for next time
+
+7. cleanup: shutil.rmtree(repo_path)
 ```
+
+The Backboard calls in steps 3 and 6 are no-ops when `BACKBOARD_API_KEY` is unset. They never raise — failures degrade silently to "no memory available."
 
 ### Dockerfile
 
