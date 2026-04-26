@@ -343,14 +343,15 @@ export default function App() {
         {/* Hero tagline */}
         {phase === "idle" && (
           <div className="text-center py-8 animate-fade-in-up">
-            <p className="mono text-xs text-[var(--accent)] tracking-[0.3em] mb-3">// SECURITY ANALYSIS PIPELINE</p>
+            <p className="mono text-xs text-[var(--accent)] tracking-[0.3em] mb-3">// HOIST THE FLAG · SECURITY ANALYSIS PIPELINE</p>
             <h1 className="text-4xl md:text-5xl font-black text-white leading-tight mb-3" style={{ fontFamily: "Syne, sans-serif" }}>
-              Connect your repo.<br />
-              <span className="text-[var(--accent)] text-glow">See why it's exploitable.</span>
+              Plunder your repo.<br />
+              <span className="text-[var(--accent)] text-glow">See where the hull leaks.</span>
             </h1>
             <p className="text-[var(--muted)] text-lg max-w-xl mx-auto">
-              Semgrep detection + AI reasoning. Not just pattern matches —
-              traced taint paths, real exploit steps, zero noise.
+              Semgrep scouts the deck, K2 reasons like a quartermaster.
+              Not just pattern matches — traced taint paths, real exploit steps,
+              zero noise. Every finding earns its place in the ship's log.
             </p>
           </div>
         )}
@@ -394,7 +395,7 @@ export default function App() {
                   </h2>
                   {phase === "done" && (
                     <button onClick={handleReset} className="mono text-xs text-[var(--accent)] hover:underline">
-                      ← New Scan
+                      ← New Voyage
                     </button>
                   )}
                 </div>

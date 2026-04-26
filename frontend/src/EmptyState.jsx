@@ -14,10 +14,10 @@ export default function EmptyState() {
         <p className="mono text-xs text-[var(--muted)] tracking-widest mb-4 uppercase">How It Works</p>
         <div className="space-y-3">
           {[
-            { n: "01", label: "Semgrep scan", desc: "Deterministic pattern detection — p/owasp-top-ten, p/secrets, p/sql-injection" },
-            { n: "02", label: "AI context analysis", desc: "Reasoning model traces taint paths across files, checks auth middleware, filters false positives" },
-            { n: "03", label: "Confirmed findings only", desc: "Only exploitable vulnerabilities surface, with file/line evidence and step-by-step exploit path" },
-            { n: "04", label: "Webhook auto-rescan", desc: "Every git push triggers a new scan. Dashboard updates live — no developer action needed" },
+            { n: "01", label: "Scout the deck — Semgrep scan", desc: "Deterministic pattern detection — p/owasp-top-ten, p/secrets, p/sql-injection" },
+            { n: "02", label: "Quartermaster reads the charts", desc: "K2 reasoning model traces taint paths across files, checks auth middleware, filters false positives" },
+            { n: "03", label: "Only true booty surfaces", desc: "Exploitable vulnerabilities only, with file/line evidence and step-by-step exploit path" },
+            { n: "04", label: "Lookout on every push — webhook rescan", desc: "Every git push triggers a new scan. Dashboard updates live — no crew action needed" },
           ].map(({ n, label, desc }) => (
             <div key={n} className="flex gap-4">
               <span className="mono text-xs text-[var(--accent)] flex-shrink-0 pt-0.5">{n}</span>
