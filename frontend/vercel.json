@@ -1,0 +1,9 @@
+{
+  "installCommand": "npm install --legacy-peer-deps",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "http://107.191.50.160:8000/:path*"
+    }
+  ]
+}
