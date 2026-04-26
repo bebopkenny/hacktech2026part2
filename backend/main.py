@@ -40,6 +40,7 @@ from context import assemble_context
 from models import ScanRequest
 from scanner import clone_repo, run_semgrep
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 log = logging.getLogger("pipeline")
 _K2_PARALLEL = int(os.getenv("K2_PARALLEL", "5"))
 
@@ -126,13 +127,18 @@ def _build_finding(finding: dict, verdict: dict) -> dict:
 def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
     repo_path: str | None = None
     try:
+        log.info("[%s] starting pipeline for %s", scan_id, url)
         ws.manager.broadcast({"type": "scan_started", "scan_id": scan_id, "url": url})
 
+        log.info("[%s] cloning…", scan_id)
         repo_path = clone_repo(url, pat)
+        log.info("[%s] cloned to %s", scan_id, repo_path)
         _update(scan_id, status="scanning")
 
+        log.info("[%s] running semgrep…", scan_id)
         raw = run_semgrep(repo_path)
         total = len(raw)
+        log.info("[%s] semgrep done: %d candidate findings", scan_id, total)
         _update(scan_id, status="analyzing", raw_count=total, progress=f"0/{total} findings")
         ws.manager.broadcast({"type": "semgrep_done", "scan_id": scan_id, "count": total})
 
@@ -191,9 +197,11 @@ def _pipeline(scan_id: str, url: str, pat: str | None) -> None:
             "confirmed_count": len(confirmed),
         })
 
+        log.info("[%s] complete: %d/%d confirmed exploitable", scan_id, len(confirmed), total)
         # Persist this scan's findings to Backboard so the next scan has context.
         backboard_client.append_findings(url, confirmed)
     except Exception as e:
+        log.exception("[%s] pipeline failed", scan_id)
         _update(scan_id, status="error", error=str(e))
         ws.manager.broadcast({"type": "scan_error", "scan_id": scan_id, "error": str(e)})
     finally:
