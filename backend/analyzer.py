@@ -61,9 +61,10 @@ semgrep message: {message}
 - Check whether the input is truly user-controlled (not from env vars, config, or other trusted sources).
 - Check if existing middleware or auth already mitigates this path.
 - Do NOT invent findings Semgrep didn't flag.
-- Respond with ONLY valid JSON — no prose, no markdown fences.
 
-## Required JSON schema
+## Output format
+You may reason briefly first, but you MUST end your response with the line `### ANSWER` on its own line, followed by a single JSON object matching this schema and nothing else:
+
 {{
   "exploitable": true or false,
   "confidence": "high" or "medium" or "low",
@@ -73,13 +74,14 @@ semgrep message: {message}
   "severity": "critical" or "high" or "medium" or "low",
   "fix": "one-sentence fix description"
 }}
+
+Keep any reasoning under 300 words. The `### ANSWER` line and JSON object are required.
 """
 
 _RETRY_NUDGE = (
-    "\n\nIMPORTANT: Your previous response could not be parsed as JSON. "
-    "Reply with ONE JSON object matching the schema above. "
-    "You may include a <think>...</think> block first, but the JSON object "
-    "must be the only content after </think>. No prose, no markdown fences."
+    "\n\nIMPORTANT: Your previous response did not include a parseable JSON object after `### ANSWER`. "
+    "Reply with at most 100 words of reasoning, then `### ANSWER` on its own line, then ONE JSON object matching the schema. "
+    "No markdown fences, no text after the JSON."
 )
 
 _FALLBACK: dict = {
@@ -94,23 +96,30 @@ _FALLBACK: dict = {
 
 
 def _extract_json(raw: str) -> dict | None:
-    """Strip <think> blocks and markdown fences, then try to parse JSON.
+    """Find the JSON object in K2's response.
 
-    Falls back to extracting the first balanced {...} block if the model
-    appended commentary after the JSON. Returns None on failure.
+    K2-Think-v2 narrates reasoning as plain prose (not <think> tags), so we
+    look for an `### ANSWER` marker and parse what follows. Falls back to the
+    LAST balanced {...} block in the response if no marker is present, and
+    finally to scanning forward for any parseable {...}.
     """
     cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-    cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
-    cleaned = re.sub(r"\n?```$", "", cleaned).strip()
+    cleaned = re.sub(r"```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+
+    # Preferred path: split on `### ANSWER` (or `### Answer`, or just `ANSWER:`).
+    marker = re.search(r"###\s*ANSWER\s*\n?|^ANSWER:\s*", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    if marker:
+        cleaned = cleaned[marker.end():].strip()
 
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    # Last-ditch: find the first {...} that parses.
-    start = cleaned.find("{")
-    while start != -1:
+    # Fallback: try every balanced {...} from the END of the string backwards
+    # (the JSON usually comes after the prose).
+    starts = [i for i, ch in enumerate(cleaned) if ch == "{"]
+    for start in reversed(starts):
         depth = 0
         for i in range(start, len(cleaned)):
             if cleaned[i] == "{":
@@ -122,7 +131,6 @@ def _extract_json(raw: str) -> dict | None:
                         return json.loads(cleaned[start : i + 1])
                     except json.JSONDecodeError:
                         break
-        start = cleaned.find("{", start + 1)
     return None
 
 
@@ -130,8 +138,8 @@ def _call_k2(prompt: str) -> str:
     client = _get_client()
     response = client.chat.completions.create(
         model=_MODEL,
-        max_tokens=1024,
-        temperature=0.3,
+        max_tokens=4096,
+        temperature=0.2,
         stream=False,
         messages=[{"role": "user", "content": prompt}],
     )
