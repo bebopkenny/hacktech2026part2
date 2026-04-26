@@ -111,7 +111,9 @@ def test_api(base_url: str, repo_url: str) -> int:
         # 3. poll status
         print("3. GET /scan/{id}/status (polling every 2s)")
         last_status = None
-        deadline = time.time() + 600  # 10 min ceiling
+        # 30 min ceiling — large repos with many findings can take a while
+        # since each finding is one sequential K2 call.
+        deadline = time.time() + 1800
         while time.time() < deadline:
             r = c.get(f"{base_url}/scan/{scan_id}/status")
             r.raise_for_status()
